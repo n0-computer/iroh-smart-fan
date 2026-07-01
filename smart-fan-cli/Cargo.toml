@@ -1,0 +1,15 @@
+[package]
+name = "smart-fan-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Native CLI client for the iroh-smart-fan ESP32 firmware (echo demo)"
+
+# Released iroh, no [patch] — unlike the firmware.
+[dependencies]
+iroh = "1.0.0"
+iroh-tickets = "1.0.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
