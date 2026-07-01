@@ -4,6 +4,7 @@ const $ticket = document.querySelector("#ticket");
 const $connect = document.querySelector("#connect");
 const $temp = document.querySelector("#temp");
 const $hum = document.querySelector("#hum");
+const $fan = document.querySelector("#fan-icon");
 const $status = document.querySelector("#status");
 
 // Persist our secret key so the browser keeps a stable endpoint id across reloads.
@@ -40,9 +41,15 @@ function paintFreshness() {
 }
 requestAnimationFrame(paintFreshness);
 
-function onReading(temp, hum) {
+function setFan(on) {
+  $fan.classList.toggle("spinning", on);
+  $fan.setAttribute("aria-label", on ? "fan on" : "fan off");
+}
+
+function onReading(temp, hum, fan) {
   $temp.textContent = temp.toFixed(1);
   $hum.textContent = hum.toFixed(1);
+  setFan(fan);
   lastReading = Date.now();
   $status.textContent = `last reading ${new Date(lastReading).toLocaleTimeString()}`;
 }
@@ -79,6 +86,7 @@ function connect() {
   lastReading = null;
   $temp.textContent = "—";
   $hum.textContent = "—";
+  setFan(false);
   onStatus("connecting…");
   current = node.subscribe(ticket, onReading, onStatus);
   connectedTicket = ticket;

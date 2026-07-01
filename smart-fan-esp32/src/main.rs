@@ -141,16 +141,16 @@ fn read_dht22_retry(pin: &mut PinDriver<'_, impl IOPin, InputOutput>) -> Result<
     }
 }
 
-/// Default humidity (%) at/above which the fan turns on. Stored in [`State`] rather
-/// than as a plain const so a later step can make it settable from the GUI.
-const DEFAULT_HUMIDITY_THRESHOLD: f32 = 60.0;
-/// Hysteresis band (%): once on, the fan only turns off after humidity drops this
-/// far below the threshold, so it doesn't chatter around the setpoint.
+/// Default temperature (°C) at/above which the fan turns on. Stored in [`State`]
+/// rather than as a plain const so a later step can make it settable from the GUI.
+const DEFAULT_TEMP_THRESHOLD: f32 = 25.0;
+/// Hysteresis band (°C): once on, the fan only turns off after the temperature drops
+/// this far below the threshold, so it doesn't chatter around the setpoint.
 const FAN_HYSTERESIS: f32 = 1.0;
 
 /// Device state behind a single lock, shared between the sensor thread (writer) and
 /// the RPC handler (reader): the latest reading, the fan on/off state, and the fan
-/// humidity setpoint (mutable so a later step can set it from the GUI). The RPC
+/// temperature setpoint (mutable so a later step can set it from the GUI). The RPC
 /// handlers project out the fields each call needs.
 #[derive(Debug, Clone, Copy)]
 struct State {
@@ -182,12 +182,12 @@ fn run_sensor(pin: Gpio26, fan_pin: Gpio25, state: Arc<Mutex<State>>) {
                 // One lock: read the setpoint, decide the fan (hysteresis), publish.
                 let threshold = {
                     let mut s = state.lock().expect("poisoned");
-                    // Hysteresis: once on, stay on until humidity drops a band below
-                    // the setpoint; once off, turn on only at the setpoint.
+                    // Hysteresis: once on, stay on until the temperature drops a band
+                    // below the setpoint; once off, turn on only at the setpoint.
                     fan_on = if fan_on {
-                        r.humidity >= s.threshold - FAN_HYSTERESIS
+                        r.temperature >= s.threshold - FAN_HYSTERESIS
                     } else {
-                        r.humidity >= s.threshold
+                        r.temperature >= s.threshold
                     };
                     s.reading = Some(r);
                     s.fan = fan_on;
@@ -196,7 +196,7 @@ fn run_sensor(pin: Gpio26, fan_pin: Gpio25, state: Arc<Mutex<State>>) {
                 // Drive the GPIO and log outside the lock.
                 let _ = if fan_on { fan.set_high() } else { fan.set_low() };
                 info!(
-                    "DHT22: {:.1}°C  {:.1}%  fan={}  (threshold {:.0}%)",
+                    "DHT22: {:.1}°C  {:.1}%  fan={}  (threshold {:.0}°C)",
                     r.temperature,
                     r.humidity,
                     if fan_on { "on" } else { "off" },
@@ -356,7 +356,7 @@ fn main() {
     let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State {
         reading: None,
         fan: false,
-        threshold: DEFAULT_HUMIDITY_THRESHOLD,
+        threshold: DEFAULT_TEMP_THRESHOLD,
     }));
 
     // Read the DHT22 + drive the fan on their own thread.

@@ -19,8 +19,8 @@ pub struct Reading {
 }
 
 /// Full device status: the latest [`Reading`] plus the fan actuator state and the
-/// humidity setpoint (%) the control loop is using. Everything a client needs in one
-/// call. Kept separate from the `GetLatest` wire format so older clients that only
+/// temperature setpoint (°C) the control loop is using. Everything a client needs in
+/// one call. Kept separate from the `GetLatest` wire format so older clients that only
 /// speak `GetLatest` keep working unchanged.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Status {

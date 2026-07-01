@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
             let client: Client<SensorProtocol> = Client::boxed(IrohRemoteConnection::new(conn));
             match client.rpc(GetStatus).await? {
                 Some(s) => println!(
-                    "{:.1}°C  {:.1}%  fan {}  (threshold {:.0}%)",
+                    "{:.1}°C  {:.1}%  fan {}  (threshold {:.0}°C)",
                     s.reading.temperature,
                     s.reading.humidity,
                     if s.fan { "on" } else { "off" },

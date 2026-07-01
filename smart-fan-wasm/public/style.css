@@ -77,6 +77,26 @@ button:disabled {
   font-weight: 600;
   opacity: 0.55;
 }
+.fan {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 1.25rem;
+}
+.fan-icon {
+  width: 3rem;
+  height: 3rem;
+  color: #8a8f98; /* muted, static when off */
+  transition: color 0.3s;
+}
+.fan-icon.spinning {
+  color: #2b6cff;
+  animation: spin 1.4s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .status {
   font-size: 0.8rem;
   opacity: 0.55;

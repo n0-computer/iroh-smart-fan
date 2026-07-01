@@ -11,7 +11,7 @@ use std::rc::Rc;
 use iroh_tickets::endpoint::EndpointTicket;
 use irpc::Client;
 use irpc_iroh::IrohLazyRemoteConnection;
-use smart_fan_proto::{GetLatest, SensorProtocol, SENSOR_ALPN};
+use smart_fan_proto::{GetStatus, SensorProtocol, SENSOR_ALPN};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 use wasm_bindgen::prelude::*;
@@ -124,18 +124,20 @@ async fn run(
         if cancelled.get() {
             return Ok(());
         }
-        let result = client.rpc(GetLatest).await;
+        // One call gets everything: reading + fan state.
+        let result = client.rpc(GetStatus).await;
         // Bail before touching the UI if we were superseded while awaiting, so a
         // late poll can't clobber the next subscription's display.
         if cancelled.get() {
             return Ok(());
         }
         match result {
-            Ok(Some(r)) => {
-                let _ = on_reading.call2(
+            Ok(Some(s)) => {
+                let _ = on_reading.call3(
                     &JsValue::NULL,
-                    &JsValue::from_f64(r.temperature as f64),
-                    &JsValue::from_f64(r.humidity as f64),
+                    &JsValue::from_f64(s.reading.temperature as f64),
+                    &JsValue::from_f64(s.reading.humidity as f64),
+                    &JsValue::from_bool(s.fan),
                 );
                 status(on_status, "live");
             }

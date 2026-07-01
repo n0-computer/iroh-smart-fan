@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Remote weather station</title>
+    <title>smart fan</title>
     <link rel="stylesheet" href="./style.css" />
     <script src="./main.js" type="module"></script>
   </head>
   <body>
     <main>
-      <h1>Remote weather station</h1>
+      <h1>smart&nbsp;fan</h1>
 
       <div class="connect">
         <input
@@ -29,6 +29,26 @@
         <div class="reading">
           <span id="hum" class="value">—</span><span class="unit">%</span>
         </div>
+      </div>
+
+      <div class="fan">
+        <svg
+          id="fan-icon"
+          class="fan-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          role="img"
+          aria-label="fan off"
+        >
+          <path
+            d="M10.827 16.379a6.082 6.082 0 0 1-8.618-7.002l5.412 1.45a6.082 6.082 0 0 1 7.002-8.618l-1.45 5.412a6.082 6.082 0 0 1 8.618 7.002l-5.412-1.45a6.082 6.082 0 0 1-7.002 8.618z"
+          />
+          <path d="M12 12v.01" />
+        </svg>
       </div>
 
       <p id="status" class="status">loading…</p>
