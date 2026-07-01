@@ -14,7 +14,10 @@ use iroh_tickets::endpoint::EndpointTicket;
 use irpc::WithChannels;
 use irpc_iroh::read_request;
 use log::{info, warn};
-use smart_fan_proto::{Reading, SensorMessage, SensorProtocol, Status, SENSOR_ALPN};
+use smart_fan_proto::{
+    Reading, SensorMessage, SensorProtocol, SetThreshold, SetThresholdResponse, Status,
+    SENSOR_ALPN, THRESHOLD_MAX, THRESHOLD_MIN,
+};
 use std::sync::{Arc, Mutex};
 
 mod std_dns_resolver;
@@ -29,6 +32,11 @@ const ECHO_ALPN: &[u8] = b"echo/0";
 /// Either way it's embedded, so the endpoint ID is stable across reboots — set
 /// IROH_SECRET=<64 hex chars or base32> only to pin a *specific* identity.
 const IROH_SECRET: Option<&str> = option_env!("IROH_SECRET");
+
+/// Shared secret for authenticating fan-control API calls, baked in at build time by
+/// `build.rs` (same mechanism as [`IROH_SECRET`]): an explicit FAN_API_SECRET env var
+/// if set, otherwise a random one generated and cached. Always present, so `env!`.
+const FAN_API_SECRET: &str = env!("FAN_API_SECRET");
 
 const WIFI_CONFIG: &str = match option_env!("WIFI_CONFIG") {
     Some(value) => value,
@@ -320,6 +328,22 @@ impl ProtocolHandler for SensorServer {
                     });
                     tx.send(status).await.ok();
                 }
+                SensorMessage::SetThreshold(msg) => {
+                    let WithChannels { inner, tx, .. } = msg;
+                    let SetThreshold { secret, threshold } = inner;
+                    let response = if secret != FAN_API_SECRET {
+                        warn!("rejected SetThreshold: bad API secret");
+                        SetThresholdResponse::Unauthorized
+                    } else if !(THRESHOLD_MIN..=THRESHOLD_MAX).contains(&threshold) {
+                        warn!("rejected SetThreshold: {threshold:.0}°C out of range");
+                        SetThresholdResponse::OutOfRange
+                    } else {
+                        self.state.lock().expect("poisoned").threshold = threshold;
+                        info!("threshold set to {threshold:.0}°C via API");
+                        SetThresholdResponse::Ok
+                    };
+                    tx.send(response).await.ok();
+                }
             }
         }
         conn.closed().await;
@@ -439,6 +463,7 @@ fn main() {
         info!("  Endpoint ID: {endpoint_id}");
         info!("  Short ticket: {short_ticket}");
         info!("  Long ticket:  {long_ticket}");
+        info!("  Fan API secret: {FAN_API_SECRET}");
         info!("  Sensor ALPN:  {}", String::from_utf8_lossy(SENSOR_ALPN));
 
         info!("Router started, accepting connections");

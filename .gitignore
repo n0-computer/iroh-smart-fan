@@ -11,5 +11,6 @@ target/
 # editor / tool caches
 .vscode/
 
-# generated wasm-bindgen output (smart-fan-wasm)
+# generated wasm-bindgen output + self-contained bundle (smart-fan-wasm)
 public/wasm/
+dist/

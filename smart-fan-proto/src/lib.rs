@@ -37,11 +37,37 @@ pub struct GetLatest;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GetStatus;
 
+/// Set the fan temperature setpoint (°C). Protected: `secret` must match the device's
+/// `FAN_API_SECRET` (printed on its serial log at startup), otherwise the device
+/// rejects the call. The secret rides inside the encrypted QUIC connection, so it's
+/// not exposed on the wire — but it's a bearer token, so keep it out of URLs and logs.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetThreshold {
+    pub secret: String,
+    pub threshold: f32,
+}
+
+/// Allowed range for the fan temperature setpoint (°C), inclusive. Shared so the
+/// client can report the bounds and, if it wants, pre-validate before calling.
+pub const THRESHOLD_MIN: f32 = 10.0;
+pub const THRESHOLD_MAX: f32 = 50.0;
+
+/// Outcome of a [`SetThreshold`] call — distinguishes why a set was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SetThresholdResponse {
+    /// Threshold updated.
+    Ok,
+    /// The secret didn't match `FAN_API_SECRET`.
+    Unauthorized,
+    /// The requested value was outside `THRESHOLD_MIN..=THRESHOLD_MAX`.
+    OutOfRange,
+}
+
 /// The sensor RPC service. `rpc_requests` generates the [`SensorMessage`] enum
 /// (the channel-carrying form) consumed by the server handler.
 ///
-/// Variants are append-only: `GetStatus` was added after `GetLatest`, so its
-/// discriminant doesn't disturb the existing one.
+/// Variants are append-only: each new method goes at the end so existing
+/// discriminants are undisturbed and older clients keep working.
 #[rpc_requests(message = SensorMessage)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SensorProtocol {
@@ -49,4 +75,6 @@ pub enum SensorProtocol {
     GetLatest(GetLatest),
     #[rpc(tx = oneshot::Sender<Option<Status>>)]
     GetStatus(GetStatus),
+    #[rpc(tx = oneshot::Sender<SetThresholdResponse>)]
+    SetThreshold(SetThreshold),
 }

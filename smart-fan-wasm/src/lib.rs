@@ -11,7 +11,7 @@ use std::rc::Rc;
 use iroh_tickets::endpoint::EndpointTicket;
 use irpc::Client;
 use irpc_iroh::IrohLazyRemoteConnection;
-use smart_fan_proto::{GetStatus, SensorProtocol, SENSOR_ALPN};
+use smart_fan_proto::{GetStatus, SensorProtocol, SetThreshold, SetThresholdResponse, SENSOR_ALPN};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 use wasm_bindgen::prelude::*;
@@ -68,10 +68,39 @@ impl Node {
         self.secret_hex.clone()
     }
 
-    /// Connect to `ticket` and poll the device. `on_reading(temperature, humidity)`
-    /// fires on each successful read; `on_status(text)` reports the connection state
-    /// and any errors. Returns a [`Subscription`]; drop it (JS `.free()`) to stop
-    /// the loop and close the connection — do that before subscribing again.
+    /// Set the fan temperature threshold on the device (protected by `secret`).
+    /// Returns `"ok"`, `"unauthorized"`, or `"out-of-range"` so the caller can react
+    /// (e.g. snap a slider back on failure).
+    pub async fn set_threshold(
+        &self,
+        ticket: String,
+        secret: String,
+        threshold: f64,
+    ) -> Result<String, JsError> {
+        let ticket: EndpointTicket = ticket.trim().parse().map_err(js_err)?;
+        let addr: iroh::EndpointAddr = ticket.into();
+        let conn = IrohLazyRemoteConnection::new(self.endpoint.clone(), addr, SENSOR_ALPN.to_vec());
+        let client: Client<SensorProtocol> = Client::boxed(conn);
+        let resp = client
+            .rpc(SetThreshold {
+                secret,
+                threshold: threshold as f32,
+            })
+            .await
+            .map_err(js_err)?;
+        Ok(match resp {
+            SetThresholdResponse::Ok => "ok",
+            SetThresholdResponse::Unauthorized => "unauthorized",
+            SetThresholdResponse::OutOfRange => "out-of-range",
+        }
+        .to_string())
+    }
+
+    /// Connect to `ticket` and poll the device. `on_reading(temperature, humidity,
+    /// fan, threshold)` fires on each successful read; `on_status(text)` reports the
+    /// connection state and any errors. Returns a [`Subscription`]; drop it (JS
+    /// `.free()`) to stop the loop and close the connection — do that before
+    /// subscribing again.
     pub fn subscribe(
         &self,
         ticket: String,
@@ -133,12 +162,14 @@ async fn run(
         }
         match result {
             Ok(Some(s)) => {
-                let _ = on_reading.call3(
-                    &JsValue::NULL,
+                // on_reading(temperature, humidity, fan, threshold)
+                let args = js_sys::Array::of4(
                     &JsValue::from_f64(s.reading.temperature as f64),
                     &JsValue::from_f64(s.reading.humidity as f64),
                     &JsValue::from_bool(s.fan),
+                    &JsValue::from_f64(s.threshold as f64),
                 );
+                let _ = on_reading.apply(&JsValue::NULL, &args);
                 status(on_status, "live");
             }
             Ok(None) => status(on_status, "no reading yet — waiting…"),

@@ -10,7 +10,10 @@ use iroh::Endpoint;
 use iroh_tickets::endpoint::EndpointTicket;
 use irpc::Client;
 use irpc_iroh::IrohRemoteConnection;
-use smart_fan_proto::{GetLatest, GetStatus, SensorProtocol, SENSOR_ALPN};
+use smart_fan_proto::{
+    GetLatest, GetStatus, SensorProtocol, SetThreshold, SetThresholdResponse, SENSOR_ALPN,
+    THRESHOLD_MAX, THRESHOLD_MIN,
+};
 
 /// Must match the firmware's echo ALPN.
 const ECHO_ALPN: &[u8] = b"echo/0";
@@ -33,6 +36,16 @@ enum Command {
     Status {
         /// Endpoint ticket printed by the firmware.
         ticket: String,
+    },
+    /// Set the fan temperature threshold (requires the device's FAN_API_SECRET).
+    SetThreshold {
+        /// Endpoint ticket printed by the firmware.
+        ticket: String,
+        /// New temperature setpoint in °C.
+        threshold: f32,
+        /// The device's FAN_API_SECRET (from its serial log); reads $FAN_API_SECRET if unset.
+        #[arg(long, env = "FAN_API_SECRET")]
+        secret: String,
     },
     /// Round-trip a message off the device (echo protocol).
     Echo {
@@ -80,6 +93,19 @@ async fn main() -> anyhow::Result<()> {
                     s.threshold
                 ),
                 None => println!("No reading yet — the sensor hasn't produced one."),
+            }
+        }
+        Command::SetThreshold { ticket, threshold, secret } => {
+            let addr: iroh::EndpointAddr = ticket.parse::<EndpointTicket>()?.into();
+            println!("Connecting to {}…", addr.id);
+            let conn = endpoint.connect(addr, SENSOR_ALPN).await?;
+            let client: Client<SensorProtocol> = Client::boxed(IrohRemoteConnection::new(conn));
+            match client.rpc(SetThreshold { secret, threshold }).await? {
+                SetThresholdResponse::Ok => println!("Threshold set to {threshold:.0}°C"),
+                SetThresholdResponse::Unauthorized => println!("Rejected — wrong FAN_API_SECRET."),
+                SetThresholdResponse::OutOfRange => println!(
+                    "Rejected — threshold must be between {THRESHOLD_MIN:.0} and {THRESHOLD_MAX:.0}°C."
+                ),
             }
         }
         Command::Echo { ticket } => {

@@ -51,6 +51,29 @@
         </svg>
       </div>
 
+      <div class="control">
+        <input
+          id="secret"
+          type="password"
+          placeholder="API secret to control the fan"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <label class="slider-row">
+          <input
+            id="threshold"
+            class="slider"
+            type="range"
+            min="10"
+            max="50"
+            step="1"
+            value="25"
+            disabled
+          />
+          <span id="threshold-label" class="threshold-label">—</span>
+        </label>
+      </div>
+
       <p id="status" class="status">loading…</p>
     </main>
   </body>

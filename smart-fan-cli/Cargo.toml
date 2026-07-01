@@ -10,7 +10,7 @@ description = "Native CLI client for the iroh-smart-fan ESP32 firmware"
 iroh = "1.0.0"
 iroh-tickets = "1.0.0"
 # CLI arg parsing.
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 # Shared protocol + the irpc client transport over iroh.
 smart-fan-proto = { path = "../smart-fan-proto" }
 irpc = { version = "0.17", default-features = false, features = ["rpc", "spans", "derive", "stream"] }

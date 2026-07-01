@@ -97,6 +97,38 @@ button:disabled {
     transform: rotate(360deg);
   }
 }
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0 0 1.25rem;
+}
+#secret {
+  width: 100%;
+}
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.slider {
+  flex: 1;
+  min-width: 0;
+  accent-color: #2b6cff;
+}
+.slider:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.threshold-label {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  min-width: 3.5ch;
+  text-align: right;
+}
+.slider:disabled + .threshold-label {
+  opacity: 0.4;
+}
 .status {
   font-size: 0.8rem;
   opacity: 0.55;

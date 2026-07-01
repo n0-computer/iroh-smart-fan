@@ -5,12 +5,18 @@ const $connect = document.querySelector("#connect");
 const $temp = document.querySelector("#temp");
 const $hum = document.querySelector("#hum");
 const $fan = document.querySelector("#fan-icon");
+const $secret = document.querySelector("#secret");
+const $slider = document.querySelector("#threshold");
+const $thresholdLabel = document.querySelector("#threshold-label");
 const $status = document.querySelector("#status");
 
 // Persist our secret key so the browser keeps a stable endpoint id across reloads.
 const SECRET_KEY = "smart-fan:secret";
 // Persist the last ticket so a reload reconnects without re-pasting.
 const TICKET_KEY = "smart-fan:ticket";
+// Persist the API secret so control survives reloads (it's a bearer token, so this
+// is the same trust level as leaving yourself logged in).
+const API_SECRET_KEY = "smart-fan:api-secret";
 
 // Fresh readings are mid-blue and fade to a readable gray over FADE_MS.
 const FRESH = [43, 108, 255]; // #2b6cff
@@ -21,11 +27,16 @@ let node = null;
 let current = null; // active Subscription handle
 let connectedTicket = null; // the ticket `current` is polling
 let lastReading = null;
+let deviceThreshold = null; // the threshold the device last reported
 
 // Prefill the ticket: ?ticket=… on the URL wins (and auto-connects below);
 // otherwise fall back to the last ticket we stored.
 const urlTicket = new URLSearchParams(location.search).get("ticket");
 $ticket.value = (urlTicket ?? localStorage.getItem(TICKET_KEY) ?? "").trim();
+
+// Restore the API secret; the slider is only enabled while a secret is present.
+$secret.value = localStorage.getItem(API_SECRET_KEY) ?? "";
+refreshSlider();
 
 // The flourish: both numbers share one color driven off `lastReading` — mid-blue
 // when fresh, fading to gray over FADE_MS. Driving it from the shared timestamp
@@ -46,10 +57,33 @@ function setFan(on) {
   $fan.setAttribute("aria-label", on ? "fan on" : "fan off");
 }
 
-function onReading(temp, hum, fan) {
+// The slider is greyed out unless an API secret is present.
+function refreshSlider() {
+  $slider.disabled = $secret.value.trim() === "";
+}
+
+function setThresholdLabel(v) {
+  $thresholdLabel.textContent = `${Math.round(v)}°C`;
+}
+
+// Snap the slider back to the device's actual threshold (used when a set is refused).
+function snapBack() {
+  if (deviceThreshold != null) {
+    $slider.value = deviceThreshold;
+    setThresholdLabel(deviceThreshold);
+  }
+}
+
+function onReading(temp, hum, fan, threshold) {
   $temp.textContent = temp.toFixed(1);
   $hum.textContent = hum.toFixed(1);
   setFan(fan);
+  deviceThreshold = threshold;
+  // Sync the slider to the device — but don't yank it while the user is adjusting it.
+  if (document.activeElement !== $slider) {
+    $slider.value = threshold;
+    setThresholdLabel(threshold);
+  }
   lastReading = Date.now();
   $status.textContent = `last reading ${new Date(lastReading).toLocaleTimeString()}`;
 }
@@ -84,8 +118,10 @@ function connect() {
   }
   // Reset the display for the new device (paintFreshness greys it out via lastReading).
   lastReading = null;
+  deviceThreshold = null;
   $temp.textContent = "—";
   $hum.textContent = "—";
+  $thresholdLabel.textContent = "—";
   setFan(false);
   onStatus("connecting…");
   current = node.subscribe(ticket, onReading, onStatus);
@@ -98,6 +134,44 @@ $ticket.addEventListener("input", refreshConnectButton);
 // Enter in the ticket field connects.
 $ticket.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !$connect.disabled) connect();
+});
+
+// Secret drives whether the slider is usable, and is persisted.
+$secret.addEventListener("input", () => {
+  localStorage.setItem(API_SECRET_KEY, $secret.value);
+  refreshSlider();
+});
+
+// Live label while dragging.
+$slider.addEventListener("input", () => setThresholdLabel($slider.value));
+
+// Commit on release: try to set it; on any refusal or error, snap back to the
+// device's actual threshold. (Status is written directly since onStatus prefers the
+// "last reading" line once a reading has arrived.)
+$slider.addEventListener("change", async () => {
+  const secret = $secret.value.trim();
+  if (!secret) return;
+  if (!connectedTicket) {
+    snapBack();
+    $status.textContent = "connect first to set the threshold";
+    return;
+  }
+  const value = Number($slider.value);
+  $status.textContent = `setting threshold to ${value}°C…`;
+  try {
+    const resp = await node.set_threshold(connectedTicket, secret, value);
+    if (resp === "ok") {
+      deviceThreshold = value;
+      $status.textContent = `threshold set to ${value}°C`;
+    } else {
+      snapBack();
+      $status.textContent =
+        resp === "unauthorized" ? "rejected — wrong secret" : "rejected — out of range";
+    }
+  } catch (err) {
+    snapBack();
+    $status.textContent = `set failed: ${err}`;
+  }
 });
 
 // Boot the endpoint.
