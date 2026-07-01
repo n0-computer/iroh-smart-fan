@@ -11,9 +11,10 @@ const SECRET_KEY = "smart-fan:secret";
 // Persist the last ticket so a reload reconnects without re-pasting.
 const TICKET_KEY = "smart-fan:ticket";
 
-// Fresh readings are mid-blue and fade to a readable gray over ~30s (see markFresh).
-const FRESH = "#2b6cff";
-const STALE = "#8a8f98";
+// Fresh readings are mid-blue and fade to a readable gray over FADE_MS.
+const FRESH = [43, 108, 255]; // #2b6cff
+const STALE = [138, 143, 152]; // #8a8f98
+const FADE_MS = 30_000;
 
 let node = null;
 let current = null; // active Subscription handle
@@ -25,31 +26,32 @@ let lastReading = null;
 const urlTicket = new URLSearchParams(location.search).get("ticket");
 $ticket.value = (urlTicket ?? localStorage.getItem(TICKET_KEY) ?? "").trim();
 
-// The flourish: a fresh reading snaps to mid-blue then transitions to gray over
-// ~30s. Each reading restarts it, so a live link stays blue while a stalled one
-// greys out.
-function markFresh(el) {
-  el.style.transition = "none";
-  el.style.color = FRESH;
-  void el.offsetWidth; // force a reflow so the snap lands before the transition
-  el.style.transition = "color 30s linear";
-  el.style.color = STALE;
+// The flourish: both numbers share one color driven off `lastReading` — mid-blue
+// when fresh, fading to gray over FADE_MS. Driving it from the shared timestamp
+// (rather than per-element CSS transitions) keeps temperature and humidity exactly
+// in sync, so one can't be stuck blue while the other is gray.
+function paintFreshness() {
+  const t = lastReading ? Math.min((Date.now() - lastReading) / FADE_MS, 1) : 1;
+  const c = FRESH.map((f, i) => Math.round(f + (STALE[i] - f) * t));
+  const color = `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+  $temp.style.color = color;
+  $hum.style.color = color;
+  requestAnimationFrame(paintFreshness);
 }
+requestAnimationFrame(paintFreshness);
 
 function onReading(temp, hum) {
   $temp.textContent = temp.toFixed(1);
   $hum.textContent = hum.toFixed(1);
-  markFresh($temp);
-  markFresh($hum);
-  lastReading = new Date();
-  $status.textContent = `last reading ${lastReading.toLocaleTimeString()}`;
+  lastReading = Date.now();
+  $status.textContent = `last reading ${new Date(lastReading).toLocaleTimeString()}`;
 }
 
 function onStatus(text) {
   // Once we've had a reading, keep showing when it was rather than clobbering it
   // with raw rpc/connection errors — the greyed-out numbers already signal stale.
   if (lastReading) {
-    $status.textContent = `last reading ${lastReading.toLocaleTimeString()}`;
+    $status.textContent = `last reading ${new Date(lastReading).toLocaleTimeString()}`;
   } else {
     $status.textContent = text;
   }
@@ -73,13 +75,10 @@ function connect() {
     current.free();
     current = null;
   }
-  // Reset the display for the new device.
+  // Reset the display for the new device (paintFreshness greys it out via lastReading).
   lastReading = null;
-  for (const el of [$temp, $hum]) {
-    el.textContent = "—";
-    el.style.transition = "none";
-    el.style.color = STALE;
-  }
+  $temp.textContent = "—";
+  $hum.textContent = "—";
   onStatus("connecting…");
   current = node.subscribe(ticket, onReading, onStatus);
   connectedTicket = ticket;

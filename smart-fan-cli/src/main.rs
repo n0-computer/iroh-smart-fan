@@ -10,7 +10,7 @@ use iroh::Endpoint;
 use iroh_tickets::endpoint::EndpointTicket;
 use irpc::Client;
 use irpc_iroh::IrohRemoteConnection;
-use smart_fan_proto::{GetLatest, SensorProtocol, SENSOR_ALPN};
+use smart_fan_proto::{GetLatest, GetStatus, SensorProtocol, SENSOR_ALPN};
 
 /// Must match the firmware's echo ALPN.
 const ECHO_ALPN: &[u8] = b"echo/0";
@@ -26,6 +26,11 @@ struct Cli {
 enum Command {
     /// Fetch the most recent sensor reading.
     Latest {
+        /// Endpoint ticket printed by the firmware.
+        ticket: String,
+    },
+    /// Fetch the full device status: reading + fan state + threshold.
+    Status {
         /// Endpoint ticket printed by the firmware.
         ticket: String,
     },
@@ -58,6 +63,22 @@ async fn main() -> anyhow::Result<()> {
             let client: Client<SensorProtocol> = Client::boxed(IrohRemoteConnection::new(conn));
             match client.rpc(GetLatest).await? {
                 Some(r) => println!("Latest reading: {:.1}°C  {:.1}%", r.temperature, r.humidity),
+                None => println!("No reading yet — the sensor hasn't produced one."),
+            }
+        }
+        Command::Status { ticket } => {
+            let addr: iroh::EndpointAddr = ticket.parse::<EndpointTicket>()?.into();
+            println!("Connecting to {}…", addr.id);
+            let conn = endpoint.connect(addr, SENSOR_ALPN).await?;
+            let client: Client<SensorProtocol> = Client::boxed(IrohRemoteConnection::new(conn));
+            match client.rpc(GetStatus).await? {
+                Some(s) => println!(
+                    "{:.1}°C  {:.1}%  fan {}  (threshold {:.0}%)",
+                    s.reading.temperature,
+                    s.reading.humidity,
+                    if s.fan { "on" } else { "off" },
+                    s.threshold
+                ),
                 None => println!("No reading yet — the sensor hasn't produced one."),
             }
         }

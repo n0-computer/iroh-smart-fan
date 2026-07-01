@@ -14,7 +14,7 @@ use iroh_tickets::endpoint::EndpointTicket;
 use irpc::WithChannels;
 use irpc_iroh::read_request;
 use log::{info, warn};
-use smart_fan_proto::{Reading, SensorMessage, SensorProtocol, SENSOR_ALPN};
+use smart_fan_proto::{Reading, SensorMessage, SensorProtocol, Status, SENSOR_ALPN};
 use std::sync::{Arc, Mutex};
 
 mod std_dns_resolver;
@@ -141,13 +141,37 @@ fn read_dht22_retry(pin: &mut PinDriver<'_, impl IOPin, InputOutput>) -> Result<
     }
 }
 
-/// Sensor thread: read the DHT22 on GPIO26 every 2 s, print it, and store it in
-/// `latest` for the RPC handler to serve.
-fn run_sensor(pin: Gpio26, latest: Arc<Mutex<Option<Reading>>>) {
+/// Default humidity (%) at/above which the fan turns on. Stored in [`State`] rather
+/// than as a plain const so a later step can make it settable from the GUI.
+const DEFAULT_HUMIDITY_THRESHOLD: f32 = 60.0;
+/// Hysteresis band (%): once on, the fan only turns off after humidity drops this
+/// far below the threshold, so it doesn't chatter around the setpoint.
+const FAN_HYSTERESIS: f32 = 1.0;
+
+/// Device state behind a single lock, shared between the sensor thread (writer) and
+/// the RPC handler (reader): the latest reading, the fan on/off state, and the fan
+/// humidity setpoint (mutable so a later step can set it from the GUI). The RPC
+/// handlers project out the fields each call needs.
+#[derive(Debug, Clone, Copy)]
+struct State {
+    reading: Option<Reading>,
+    fan: bool,
+    threshold: f32,
+}
+
+/// Sensor + actuator thread: read the DHT22 on GPIO26 every 2 s, drive the fan on
+/// GPIO25 from the humidity vs. the threshold with hysteresis, and publish the
+/// reading + fan state into the shared `state` for the RPC handler to serve.
+fn run_sensor(pin: Gpio26, fan_pin: Gpio25, state: Arc<Mutex<State>>) {
     let mut sensor =
         PinDriver::input_output_od(pin).expect("Failed to configure GPIO26 (DHT22)");
     sensor.set_pull(Pull::Up).expect("pull-up");
     sensor.set_high().expect("high");
+
+    // Fan output on GPIO25 (HIGH = on). Wire an LED + ~220–330 Ω to GND for now.
+    let mut fan = PinDriver::output(fan_pin).expect("Failed to configure GPIO25 (fan)");
+    fan.set_low().expect("fan low");
+    let mut fan_on = false;
 
     // DHT22 needs ≥1 s after power-on before the first read.
     std::thread::sleep(std::time::Duration::from_secs(2));
@@ -155,8 +179,29 @@ fn run_sensor(pin: Gpio26, latest: Arc<Mutex<Option<Reading>>>) {
     loop {
         match read_dht22_retry(&mut sensor) {
             Ok(r) => {
-                info!("DHT22: {:.1}°C  {:.1}%", r.temperature, r.humidity);
-                *latest.lock().expect("poisoned") = Some(r);
+                // One lock: read the setpoint, decide the fan (hysteresis), publish.
+                let threshold = {
+                    let mut s = state.lock().expect("poisoned");
+                    // Hysteresis: once on, stay on until humidity drops a band below
+                    // the setpoint; once off, turn on only at the setpoint.
+                    fan_on = if fan_on {
+                        r.humidity >= s.threshold - FAN_HYSTERESIS
+                    } else {
+                        r.humidity >= s.threshold
+                    };
+                    s.reading = Some(r);
+                    s.fan = fan_on;
+                    s.threshold
+                };
+                // Drive the GPIO and log outside the lock.
+                let _ = if fan_on { fan.set_high() } else { fan.set_low() };
+                info!(
+                    "DHT22: {:.1}°C  {:.1}%  fan={}  (threshold {:.0}%)",
+                    r.temperature,
+                    r.humidity,
+                    if fan_on { "on" } else { "off" },
+                    threshold,
+                );
             }
             Err(e) => warn!("DHT22 read failed: {e}"),
         }
@@ -252,7 +297,7 @@ impl ProtocolHandler for Echo {
 /// accepted connection reads requests and answers them from the latest reading.
 #[derive(Debug, Clone)]
 struct SensorServer {
-    latest: Arc<Mutex<Option<Reading>>>,
+    state: Arc<Mutex<State>>,
 }
 
 impl ProtocolHandler for SensorServer {
@@ -261,8 +306,19 @@ impl ProtocolHandler for SensorServer {
             match msg {
                 SensorMessage::GetLatest(msg) => {
                     let WithChannels { tx, .. } = msg;
-                    let latest = *self.latest.lock().expect("poisoned");
-                    tx.send(latest).await.ok();
+                    // Original API: project out just the reading.
+                    let reading = self.state.lock().expect("poisoned").reading;
+                    tx.send(reading).await.ok();
+                }
+                SensorMessage::GetStatus(msg) => {
+                    let WithChannels { tx, .. } = msg;
+                    let s = *self.state.lock().expect("poisoned");
+                    let status = s.reading.map(|reading| Status {
+                        reading,
+                        fan: s.fan,
+                        threshold: s.threshold,
+                    });
+                    tx.send(status).await.ok();
                 }
             }
         }
@@ -289,20 +345,26 @@ fn main() {
     // Pure-Rust crypto provider with minimal QUIC support
     let provider = std::sync::Arc::new(quic_crypto_provider::provider());
 
-    // Split peripherals once: the modem drives WiFi, GPIO26 drives the DHT22.
+    // Split peripherals once: the modem drives WiFi, GPIO26 the DHT22, GPIO25 the fan.
     let peripherals = Peripherals::take().expect("Failed to take peripherals");
     let modem = peripherals.modem;
     let sensor_pin = peripherals.pins.gpio26;
+    let fan_pin = peripherals.pins.gpio25;
 
-    // Latest reading, shared between the sensor thread (writer) and the RPC handler.
-    let latest: Arc<Mutex<Option<Reading>>> = Arc::new(Mutex::new(None));
+    // Single shared state behind one lock, written by the sensor thread and read by
+    // the RPC handler.
+    let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State {
+        reading: None,
+        fan: false,
+        threshold: DEFAULT_HUMIDITY_THRESHOLD,
+    }));
 
-    // Read the DHT22 on its own thread: print and store the latest reading.
-    let sensor_latest = latest.clone();
+    // Read the DHT22 + drive the fan on their own thread.
+    let sensor_state = state.clone();
     std::thread::Builder::new()
         .name("sensor".into())
         .stack_size(8192)
-        .spawn(move || run_sensor(sensor_pin, sensor_latest))
+        .spawn(move || run_sensor(sensor_pin, fan_pin, sensor_state))
         .expect("Failed to spawn sensor thread");
 
     let (_wifi, wifi_ip) = connect_wifi(modem);
@@ -369,7 +431,7 @@ fn main() {
 
         let _router = Router::builder(endpoint)
             .accept(ECHO_ALPN, Echo)
-            .accept(SENSOR_ALPN, SensorServer { latest })
+            .accept(SENSOR_ALPN, SensorServer { state })
             .spawn();
 
         info!("Iroh endpoint bound");
