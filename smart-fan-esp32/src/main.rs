@@ -21,11 +21,13 @@ mod std_dns_resolver;
 mod quic_crypto_provider;
 mod insecure_verifier;
 
-/// The ALPN for the echo protocol
+/// The ALPN for the echo protocol.
 const ECHO_ALPN: &[u8] = b"echo/0";
 
-/// Optional: bake in a fixed secret key so the node ID is stable across reboots.
-/// Set via: IROH_SECRET=<64 hex chars or base32> cargo build
+/// The node's secret key, always baked in at build time by `build.rs`: an explicit
+/// IROH_SECRET env var if you set one, otherwise a random key generated and cached.
+/// Either way it's embedded, so the endpoint ID is stable across reboots — set
+/// IROH_SECRET=<64 hex chars or base32> only to pin a *specific* identity.
 const IROH_SECRET: Option<&str> = option_env!("IROH_SECRET");
 
 const WIFI_CONFIG: &str = match option_env!("WIFI_CONFIG") {
@@ -231,27 +233,17 @@ fn sync_time_sntp() -> esp_idf_svc::sntp::EspSntp<'static> {
     sntp
 }
 
-/// Echo protocol handler
+/// Echo protocol handler — the simple bytes-in/bytes-out side protocol.
 #[derive(Debug, Clone)]
 struct Echo;
 
 impl ProtocolHandler for Echo {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let endpoint_id = connection.remote_id();
-        info!("Accepted connection from {endpoint_id}");
-
         let (mut send, mut recv) = connection.accept_bi().await?;
-        info!("Got bidi stream");
-
-        // Echo bytes back
-        let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
-        info!("Copied over {bytes_sent} byte(s)");
-
+        let bytes = tokio::io::copy(&mut recv, &mut send).await?;
+        info!("echoed {bytes} byte(s)");
         send.finish()?;
-
         connection.closed().await;
-        info!("Connection closed");
-
         Ok(())
     }
 }

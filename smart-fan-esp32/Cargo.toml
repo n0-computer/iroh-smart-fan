@@ -44,6 +44,10 @@ esp-idf-svc = "0.51"
 iroh = { git = "https://github.com/n0-computer/iroh", branch = "refactor-hickory", default-features = false }
 iroh-relay = { git = "https://github.com/n0-computer/iroh", branch = "refactor-hickory", default-features = false }
 iroh-tickets = "1.0.0"
+# Pin iroh-base to 1.0.0 to match the branch. The [patch] below only covers 1.0.0,
+# so without this cargo picks the newer crates.io iroh-base 1.0.1 for iroh-tickets —
+# giving two incompatible iroh-base versions (endpoint.addr() vs EndpointTicket::new).
+iroh-base = "=1.0.0"
 tokio = { version = "1", features = ["rt"] }
 rustls-rustcrypto = { git = "https://github.com/n0-computer/rustls-rustcrypto", branch = "feature-flag-algorithms-v0.0.2", default-features = false, features = ["std", "p256"] }
 rustls = { version = "0.23", default-features = false }

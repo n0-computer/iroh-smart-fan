@@ -753,7 +753,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.118",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -2015,7 +2015,7 @@ dependencies = [
  "getrandom 0.4.3",
  "http",
  "ipnet",
- "iroh-base 1.0.0",
+ "iroh-base",
  "iroh-dns",
  "iroh-metrics",
  "iroh-relay",
@@ -2065,16 +2065,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-base"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61cdf012298adc13f5c2c821ad87214fecc9ac54c751301d45bf62b229a85da1"
-dependencies = [
- "n0-error",
- "serde",
-]
-
-[[package]]
 name = "iroh-dns"
 version = "1.0.0"
 source = "git+https://github.com/n0-computer/iroh?branch=refactor-hickory#b8a45dbd5fa32cbd93ac6cc786e16170da3bb87c"
@@ -2083,7 +2073,7 @@ dependencies = [
  "cfg_aliases",
  "derive_more",
  "ipconfig",
- "iroh-base 1.0.0",
+ "iroh-base",
  "jni 0.22.4",
  "lru",
  "n0-error",
@@ -2143,7 +2133,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "iroh-base 1.0.0",
+ "iroh-base",
  "iroh-dns",
  "iroh-metrics",
  "lru",
@@ -2180,7 +2170,7 @@ checksum = "da53233419ca36bf521ed45683b7748366f9b233032891eefc2d70567a84ac54"
 dependencies = [
  "data-encoding",
  "derive_more",
- "iroh-base 1.0.0",
+ "iroh-base",
  "n0-error",
  "postcard",
  "serde",
@@ -2218,7 +2208,7 @@ version = "0.17.0"
 dependencies = [
  "getrandom 0.3.4",
  "iroh",
- "iroh-base 1.0.1",
+ "iroh-base",
  "irpc",
  "n0-error",
  "n0-future",
@@ -3786,6 +3776,7 @@ dependencies = [
  "embuild",
  "esp-idf-svc",
  "iroh",
+ "iroh-base",
  "iroh-relay",
  "iroh-tickets",
  "irpc",
@@ -4003,7 +3994,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
