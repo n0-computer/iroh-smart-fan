@@ -1,6 +1,8 @@
 use core::convert::TryInto;
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::hal::gpio::*;
+use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi};
@@ -46,19 +48,128 @@ unsafe extern "C" fn gethostname(name: *mut core::ffi::c_char, len: usize) -> co
     0
 }
 
-fn connect_wifi() -> (BlockingWifi<EspWifi<'static>>, std::net::Ipv4Addr) {
+// --- DHT22 sensor (single-wire bit-bang, wired on GPIO26) --------------------
+
+/// One temperature/humidity reading.
+struct Reading {
+    temperature: f32,
+    humidity: f32,
+}
+
+/// Microseconds since boot (ESP-IDF hardware timer).
+fn micros() -> i64 {
+    unsafe { esp_idf_svc::sys::esp_timer_get_time() }
+}
+
+/// Busy-wait `us` microseconds via the hardware-calibrated ROM delay.
+fn busy_wait_us(us: u32) {
+    unsafe { esp_idf_svc::sys::esp_rom_delay_us(us) }
+}
+
+/// Per-edge timeout for the DHT22 bit-bang. Generous on purpose: long cables slow
+/// the pull-up's rise, and the bit-bang can be briefly preempted by WiFi/QUIC.
+const DHT_EDGE_TIMEOUT_US: i64 = 3_000;
+
+/// Busy-wait until the pin reaches `level`, or `timeout_us` elapses.
+fn wait_for(
+    pin: &PinDriver<'_, impl IOPin, InputOutput>,
+    level: Level,
+    timeout_us: i64,
+) -> Result<(), &'static str> {
+    let start = micros();
+    while pin.get_level() != level {
+        if micros() - start > timeout_us {
+            return Err("timeout");
+        }
+    }
+    Ok(())
+}
+
+/// Read 40 bits from a DHT22. The pin must be open-drain input/output with a pull-up.
+fn read_dht22(pin: &mut PinDriver<'_, impl IOPin, InputOutput>) -> Result<Reading, &'static str> {
+    // Start signal: pull low ≥1 ms, then release (pull-up brings it high).
+    pin.set_low().map_err(|_| "set_low")?;
+    busy_wait_us(3_000);
+    pin.set_high().map_err(|_| "set_high")?;
+    busy_wait_us(40);
+
+    // Response: sensor pulls low ~80 µs, then high ~80 µs.
+    wait_for(pin, Level::Low, DHT_EDGE_TIMEOUT_US)?;
+    wait_for(pin, Level::High, DHT_EDGE_TIMEOUT_US)?;
+    wait_for(pin, Level::Low, DHT_EDGE_TIMEOUT_US)?;
+
+    // 40 data bits: each starts ~50 µs low, then a variable-length high.
+    let mut data = [0u8; 5];
+    for i in 0..40 {
+        wait_for(pin, Level::High, DHT_EDGE_TIMEOUT_US)?;
+        let t = micros();
+        wait_for(pin, Level::Low, DHT_EDGE_TIMEOUT_US)?;
+        // 26-28 µs high → 0, ~70 µs high → 1.
+        if micros() - t > 40 {
+            data[i / 8] |= 1 << (7 - (i % 8));
+        }
+    }
+
+    // Checksum: sum of the first 4 bytes, truncated to u8.
+    let sum: u8 = data[..4].iter().map(|&b| b as u16).sum::<u16>() as u8;
+    if sum != data[4] {
+        return Err("checksum mismatch");
+    }
+
+    let humidity = ((data[0] as u16) << 8 | data[1] as u16) as f32 / 10.0;
+    let raw = ((data[2] as u16 & 0x7F) << 8) | data[3] as u16;
+    let temperature = if data[2] & 0x80 != 0 { -(raw as f32) } else { raw as f32 } / 10.0;
+
+    Ok(Reading {
+        temperature,
+        humidity,
+    })
+}
+
+/// Read a DHT22, retrying once on failure. Most failures are transient — the
+/// bit-bang frame gets preempted by WiFi/QUIC and an edge is missed — so an
+/// immediate re-read recovers the bulk of them.
+fn read_dht22_retry(pin: &mut PinDriver<'_, impl IOPin, InputOutput>) -> Result<Reading, &'static str> {
+    match read_dht22(pin) {
+        Ok(reading) => Ok(reading),
+        Err(_) => {
+            busy_wait_us(2_000); // let the line settle before a fresh start pulse
+            read_dht22(pin)
+        }
+    }
+}
+
+/// Sensor thread: read the DHT22 on GPIO26 every 2 s and print. Step 1 — no iroh.
+fn run_sensor(pin: Gpio26) {
+    let mut sensor =
+        PinDriver::input_output_od(pin).expect("Failed to configure GPIO26 (DHT22)");
+    sensor.set_pull(Pull::Up).expect("pull-up");
+    sensor.set_high().expect("high");
+
+    // DHT22 needs ≥1 s after power-on before the first read.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    loop {
+        match read_dht22_retry(&mut sensor) {
+            Ok(r) => info!("DHT22: {:.1}°C  {:.1}%", r.temperature, r.humidity),
+            Err(e) => warn!("DHT22 read failed: {e}"),
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+fn connect_wifi(modem: Modem) -> (BlockingWifi<EspWifi<'static>>, std::net::Ipv4Addr) {
     let (ssid, password) = WIFI_CONFIG
         .split_once(':')
         .expect("WIFI_CONFIG must be in the format SSID:PASSWORD");
 
     info!("Connecting to WiFi network: {ssid}");
 
-    let peripherals = Peripherals::take().expect("Failed to take peripherals");
     let sys_loop = EspSystemEventLoop::take().expect("Failed to take event loop");
     let nvs = EspDefaultNvsPartition::take().expect("Failed to take NVS partition");
 
     let mut wifi = BlockingWifi::wrap(
-        EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs))
+        EspWifi::new(modem, sys_loop.clone(), Some(nvs))
             .expect("Failed to create EspWifi"),
         sys_loop,
     )
@@ -159,7 +270,19 @@ fn main() {
     // Pure-Rust crypto provider with minimal QUIC support
     let provider = std::sync::Arc::new(quic_crypto_provider::provider());
 
-    let (_wifi, wifi_ip) = connect_wifi();
+    // Split peripherals once: the modem drives WiFi, GPIO26 drives the DHT22.
+    let peripherals = Peripherals::take().expect("Failed to take peripherals");
+    let modem = peripherals.modem;
+    let sensor_pin = peripherals.pins.gpio26;
+
+    // Read the DHT22 on its own thread and just print — no iroh involvement yet.
+    std::thread::Builder::new()
+        .name("sensor".into())
+        .stack_size(8192)
+        .spawn(move || run_sensor(sensor_pin))
+        .expect("Failed to spawn sensor thread");
+
+    let (_wifi, wifi_ip) = connect_wifi(modem);
 
     // Sync system clock via SNTP — needed for TLS certificate validation
     // Keep _sntp alive so the periodic re-sync continues
