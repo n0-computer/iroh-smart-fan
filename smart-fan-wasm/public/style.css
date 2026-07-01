@@ -1,0 +1,85 @@
+:root {
+  color-scheme: light dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  padding: 3rem 1rem;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: flex;
+  justify-content: center;
+}
+main {
+  width: 100%;
+  max-width: 22rem;
+}
+h1 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: 0 0 1.25rem;
+  text-align: center;
+  opacity: 0.75;
+}
+.connect {
+  display: flex;
+  gap: 0.5rem;
+}
+input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  background: transparent;
+  color: inherit;
+}
+input:disabled {
+  opacity: 0.5;
+}
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: #2b6cff;
+  color: white;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.readings {
+  display: flex;
+  gap: 2.5rem;
+  margin: 3rem 0 1.5rem;
+  justify-content: center;
+}
+.reading {
+  display: flex;
+  align-items: baseline;
+  gap: 0.15rem;
+}
+.value {
+  font-variant-numeric: tabular-nums;
+  font-size: 3.25rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #8a8f98; /* settled gray, until the first reading arrives */
+}
+.unit {
+  font-size: 1.15rem;
+  font-weight: 600;
+  opacity: 0.55;
+}
+.status {
+  font-size: 0.8rem;
+  opacity: 0.55;
+  text-align: center;
+  margin: 0;
+}

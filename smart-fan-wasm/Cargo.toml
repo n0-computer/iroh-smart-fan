@@ -1,0 +1,39 @@
+[package]
+name = "smart-fan-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Browser GUI (Rust + WebAssembly) for the smart-fan ESP32 — relay-only"
+
+# cdylib: the wasm artifact the browser loads. rlib: lets it also build natively.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Pin to the installed wasm-bindgen CLI (crate and CLI versions must match exactly).
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1.7"
+# iroh in the browser: ring TLS works on wasm32. Browsers have no UDP/QUIC sockets,
+# so this endpoint is relay-only — it reaches the PSRAM firmware via an n0 relay.
+iroh = { version = "1.0.0", default-features = false, features = ["tls-ring"] }
+iroh-tickets = "1.0.0"
+# Shared protocol (published irpc, no [patch] — this is a normal crates.io graph).
+smart-fan-proto = { path = "../smart-fan-proto" }
+irpc = { version = "0.17", default-features = false, features = ["rpc", "spans", "derive", "stream"] }
+irpc-iroh = "0.17"
+# Browser timer for the poll interval (tokio::time::sleep doesn't run on wasm).
+gloo-timers = { version = "0.3", features = ["futures"] }
+js-sys = "0.3"
+# wasm32 has no OS RNG; route getrandom to Web Crypto (see .cargo/config.toml).
+getrandom = { version = "0.3", features = ["wasm_js"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber-wasm = "0.1.0"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

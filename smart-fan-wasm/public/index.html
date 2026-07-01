@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remote weather station</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./main.js" type="module"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Remote weather station</h1>
+
+      <div class="connect">
+        <input
+          id="ticket"
+          type="text"
+          placeholder="paste endpoint ticket"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button id="connect" type="button" disabled>connect</button>
+      </div>
+
+      <div class="readings">
+        <div class="reading">
+          <span id="temp" class="value">—</span><span class="unit">°C</span>
+        </div>
+        <div class="reading">
+          <span id="hum" class="value">—</span><span class="unit">%</span>
+        </div>
+      </div>
+
+      <p id="status" class="status">loading…</p>
+    </main>
+  </body>
+</html>
