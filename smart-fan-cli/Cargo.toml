@@ -3,13 +3,19 @@ name = "smart-fan-cli"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Native CLI client for the iroh-smart-fan ESP32 firmware (echo demo)"
+description = "Native CLI client for the iroh-smart-fan ESP32 firmware"
 
 # Released iroh, no [patch] — unlike the firmware.
 [dependencies]
 iroh = "1.0.0"
 iroh-tickets = "1.0.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Shared protocol + the irpc client transport over iroh.
+smart-fan-proto = { path = "../smart-fan-proto" }
+irpc = { version = "0.17", default-features = false, features = ["rpc", "spans", "derive", "stream"] }
+irpc-iroh = "0.17"
+# `fs` is needed because tokio-rustls-acme (pulled in transitively via iroh-relay)
+# uses `tokio::fs` but doesn't enable the feature itself.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }

@@ -51,6 +51,12 @@ aes = "0.8"
 aes-gcm = "0.10"
 n0-error = "1.0.0"
 n0-future = "0.3"
+# Shared protocol + irpc over the iroh connection. irpc-iroh provides the iroh
+# transport (ProtocolHandler + read_request); serde drives (de)serialization.
+smart-fan-proto = { path = "../smart-fan-proto" }
+serde = { version = "1", features = ["derive"] }
+irpc = { version = "0.17", default-features = false, features = ["rpc", "derive", "stream"] }
+irpc-iroh = "0.17"
 
 # --- Optional Embassy Integration ---
 # esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
@@ -73,6 +79,16 @@ n0-future = "0.3"
 embuild = "0.33"
 
 [patch.crates-io]
-# iroh-base: unify the copy used by iroh (this branch) and iroh-tickets (crates.io).
+# Unify the whole iroh family onto our branch. iroh-tickets and irpc-iroh (crates.io)
+# request crates.io iroh/iroh-base; redirect them to the refactor-hickory branch so
+# there is a single iroh in the build (same source+rev as the direct git deps above,
+# so they collapse to one package).
+iroh = { git = "https://github.com/n0-computer/iroh", branch = "refactor-hickory" }
+iroh-relay = { git = "https://github.com/n0-computer/iroh", branch = "refactor-hickory" }
 iroh-base = { git = "https://github.com/n0-computer/iroh", branch = "refactor-hickory" }
-# netwatch esp-idf support (posix_minimal) is upstreamed in 0.19 — no patch needed.
+# irpc/irpc-iroh: redirect the published crates to the local ring-free checkout
+# (default-features=false → no ring, plus a portable-atomic fix for 32-bit). Path
+# deps for now — for the published blog, switch to crates.io irpc once the Xtensa
+# fixes are released.
+irpc = { path = "/Users/rklaehn/projects_git/irpc" }
+irpc-iroh = { path = "/Users/rklaehn/projects_git/irpc/irpc-iroh" }

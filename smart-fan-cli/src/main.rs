@@ -1,7 +1,7 @@
-//! Minimal iroh echo client for the PSRAM ESP32 firmware.
+//! Minimal iroh client for the smart-fan ESP32 firmware.
 //!
-//! Dials the endpoint from its ticket, opens one bidirectional stream, sends a
-//! message, and checks it comes back echoed.
+//! Dials the endpoint from its ticket and asks for the latest sensor reading — one
+//! `GetLatest` RPC over `SENSOR_ALPN`.
 //!
 //! Usage:
 //!     cargo run -- <endpoint-ticket>
@@ -10,9 +10,9 @@ use anyhow::Context;
 use iroh::endpoint::presets;
 use iroh::Endpoint;
 use iroh_tickets::endpoint::EndpointTicket;
-
-/// Must match the firmware's `ECHO_ALPN`.
-const ECHO_ALPN: &[u8] = b"echo/0";
+use irpc::Client;
+use irpc_iroh::IrohRemoteConnection;
+use smart_fan_proto::{GetLatest, SensorProtocol, SENSOR_ALPN};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
 
     let ticket: EndpointTicket = std::env::args()
         .nth(1)
-        .context("usage: smart-fan-client <endpoint-ticket>")?
+        .context("usage: smart-fan-cli <endpoint-ticket>")?
         .parse()?;
     let addr: iroh::EndpointAddr = ticket.into();
 
@@ -33,21 +33,15 @@ async fn main() -> anyhow::Result<()> {
     let endpoint = Endpoint::builder(presets::N0).bind().await?;
 
     println!("Connecting to {}…", addr.id);
-    let conn = endpoint.connect(addr, ECHO_ALPN).await?;
+    let conn = endpoint.connect(addr, SENSOR_ALPN).await?;
 
-    let (mut send, mut recv) = conn.open_bi().await?;
-    let msg = b"Hello from iroh!";
-    send.write_all(msg).await?;
-    send.finish()?;
-    println!("Sent:     {}", String::from_utf8_lossy(msg));
+    // Wrap the QUIC connection as an irpc client and make one call.
+    let client: Client<SensorProtocol> = Client::boxed(IrohRemoteConnection::new(conn));
+    match client.rpc(GetLatest).await? {
+        Some(r) => println!("Latest reading: {:.1}°C  {:.1}%", r.temperature, r.humidity),
+        None => println!("No reading yet — the sensor hasn't produced one."),
+    }
 
-    // Read until the server closes its send side.
-    let echoed = recv.read_to_end(64 * 1024).await?;
-    println!("Received: {}", String::from_utf8_lossy(&echoed));
-    anyhow::ensure!(echoed == msg, "echo mismatch!");
-    println!("Echo OK — iroh <-> ESP32!");
-
-    conn.close(0u32.into(), b"done");
     endpoint.close().await;
     Ok(())
 }

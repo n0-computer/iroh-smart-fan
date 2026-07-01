@@ -11,7 +11,11 @@ use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::SecretKey;
 use iroh::tls::CaTlsConfig;
 use iroh_tickets::endpoint::EndpointTicket;
+use irpc::WithChannels;
+use irpc_iroh::read_request;
 use log::{info, warn};
+use smart_fan_proto::{Reading, SensorMessage, SensorProtocol, SENSOR_ALPN};
+use std::sync::{Arc, Mutex};
 
 mod std_dns_resolver;
 mod quic_crypto_provider;
@@ -50,11 +54,7 @@ unsafe extern "C" fn gethostname(name: *mut core::ffi::c_char, len: usize) -> co
 
 // --- DHT22 sensor (single-wire bit-bang, wired on GPIO26) --------------------
 
-/// One temperature/humidity reading.
-struct Reading {
-    temperature: f32,
-    humidity: f32,
-}
+// `Reading` now comes from smart_fan_proto (shared with the CLI).
 
 /// Microseconds since boot (ESP-IDF hardware timer).
 fn micros() -> i64 {
@@ -139,8 +139,9 @@ fn read_dht22_retry(pin: &mut PinDriver<'_, impl IOPin, InputOutput>) -> Result<
     }
 }
 
-/// Sensor thread: read the DHT22 on GPIO26 every 2 s and print. Step 1 — no iroh.
-fn run_sensor(pin: Gpio26) {
+/// Sensor thread: read the DHT22 on GPIO26 every 2 s, print it, and store it in
+/// `latest` for the RPC handler to serve.
+fn run_sensor(pin: Gpio26, latest: Arc<Mutex<Option<Reading>>>) {
     let mut sensor =
         PinDriver::input_output_od(pin).expect("Failed to configure GPIO26 (DHT22)");
     sensor.set_pull(Pull::Up).expect("pull-up");
@@ -151,7 +152,10 @@ fn run_sensor(pin: Gpio26) {
 
     loop {
         match read_dht22_retry(&mut sensor) {
-            Ok(r) => info!("DHT22: {:.1}°C  {:.1}%", r.temperature, r.humidity),
+            Ok(r) => {
+                info!("DHT22: {:.1}°C  {:.1}%", r.temperature, r.humidity);
+                *latest.lock().expect("poisoned") = Some(r);
+            }
             Err(e) => warn!("DHT22 read failed: {e}"),
         }
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -252,6 +256,29 @@ impl ProtocolHandler for Echo {
     }
 }
 
+/// iroh `ProtocolHandler` for the sensor RPC. Cloneable shared-state server: every
+/// accepted connection reads requests and answers them from the latest reading.
+#[derive(Debug, Clone)]
+struct SensorServer {
+    latest: Arc<Mutex<Option<Reading>>>,
+}
+
+impl ProtocolHandler for SensorServer {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        while let Some(msg) = read_request::<SensorProtocol>(&conn).await? {
+            match msg {
+                SensorMessage::GetLatest(msg) => {
+                    let WithChannels { tx, .. } = msg;
+                    let latest = *self.latest.lock().expect("poisoned");
+                    tx.send(latest).await.ok();
+                }
+            }
+        }
+        conn.closed().await;
+        Ok(())
+    }
+}
+
 fn main() {
     // It is necessary to call this function once. Otherwise, some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
@@ -275,11 +302,15 @@ fn main() {
     let modem = peripherals.modem;
     let sensor_pin = peripherals.pins.gpio26;
 
-    // Read the DHT22 on its own thread and just print — no iroh involvement yet.
+    // Latest reading, shared between the sensor thread (writer) and the RPC handler.
+    let latest: Arc<Mutex<Option<Reading>>> = Arc::new(Mutex::new(None));
+
+    // Read the DHT22 on its own thread: print and store the latest reading.
+    let sensor_latest = latest.clone();
     std::thread::Builder::new()
         .name("sensor".into())
         .stack_size(8192)
-        .spawn(move || run_sensor(sensor_pin))
+        .spawn(move || run_sensor(sensor_pin, sensor_latest))
         .expect("Failed to spawn sensor thread");
 
     let (_wifi, wifi_ip) = connect_wifi(modem);
@@ -344,13 +375,17 @@ fn main() {
             )));
         let long_ticket = EndpointTicket::new(addr_with_ip);
 
-        let _router = Router::builder(endpoint).accept(ECHO_ALPN, Echo).spawn();
+        let _router = Router::builder(endpoint)
+            .accept(ECHO_ALPN, Echo)
+            .accept(SENSOR_ALPN, SensorServer { latest })
+            .spawn();
 
         info!("Iroh endpoint bound");
         info!("  Listening on: {wifi_ip}:{port}");
         info!("  Endpoint ID: {endpoint_id}");
         info!("  Short ticket: {short_ticket}");
         info!("  Long ticket:  {long_ticket}");
+        info!("  Sensor ALPN:  {}", String::from_utf8_lossy(SENSOR_ALPN));
 
         info!("Router started, accepting connections");
 

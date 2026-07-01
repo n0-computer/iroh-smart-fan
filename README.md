@@ -1,22 +1,24 @@
 # iroh-smart-fan
 
-An [iroh](https://iroh.computer) echo endpoint running on a **PSRAM ESP32**, dialed
-from a desktop CLI. Both speak standard QUIC, so a stock desktop iroh and the ESP32 talk to each other over the internet (via an n0 relay) or locally with nothing
-in between.
+An [iroh](https://iroh.computer) endpoint running on a **PSRAM ESP32** that reads a
+DHT22 temperature/humidity sensor and serves the readings over standard QUIC. A
+desktop CLI dials it — over the internet (via an n0 relay) or locally, with nothing
+in between — and asks for the latest reading.
 
-This is the foundation for a smart-fan project; for now it's the smallest thing
-worth shipping: **echo**.
+Foundation for a smart-fan project. (It also still answers the `echo/0` protocol
+from the initial bring-up.)
 
-## Two crates (deliberately not a workspace)
+## Three crates (deliberately not a workspace)
 
 | crate | what |
 |-------|------|
-| [`smart-fan-cli/`](smart-fan-cli) | native CLI that dials the ticket and echoes a message |
-| [`smart-fan-esp32/`](smart-fan-esp32) | the ESP32 firmware (echo server) |
+| [`smart-fan-proto/`](smart-fan-proto) | the shared irpc protocol: `Reading` + a `GetLatest` RPC |
+| [`smart-fan-esp32/`](smart-fan-esp32) | the ESP32 firmware — reads the DHT22 and serves the RPC |
+| [`smart-fan-cli/`](smart-fan-cli) | native CLI that dials the ticket and fetches the latest reading |
 
-They can't be one workspace: the firmware needs a different toolchain and a patched
-iroh, while the client uses released iroh. Conflicting dependency graphs → two
-standalone crates.
+The firmware and CLI can't share a workspace: the firmware needs a different
+toolchain and a patched iroh, while the client uses released iroh. The proto crate
+is board-agnostic (no `[patch]`) and is a path dependency of both.
 
 ## Target boards
 
@@ -31,11 +33,13 @@ uses iroh's default buffers, no frugal tuning.
    cd smart-fan-esp32
    WIFI_CONFIG='SSID:PASSWORD' cargo run --release
    ```
-   It prints an **endpoint ticket** on the serial console.
+   It prints an **endpoint ticket** on the serial console (use the **long** ticket).
 
 2. **Run the client** with that ticket:
    ```bash
    cd smart-fan-cli
    cargo run -- <endpoint-ticket>
    ```
-   You should see `Echo OK — iroh <-> ESP32!`.
+   ```
+   Latest reading: 27.6°C  49.8%
+   ```
