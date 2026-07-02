@@ -1,11 +1,11 @@
 use core::convert::TryInto;
 
-use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::eventloop::{EspSubscription, EspSystemEventLoop, System};
 use esp_idf_svc::hal::gpio::*;
 use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi};
+use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi, WifiEvent};
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::SecretKey;
@@ -18,7 +18,7 @@ use smart_fan_proto::{
     Reading, SensorMessage, SensorProtocol, SetThreshold, SetThresholdResponse, Status,
     SENSOR_ALPN, THRESHOLD_MAX, THRESHOLD_MIN,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 
 mod std_dns_resolver;
 mod quic_crypto_provider;
@@ -168,9 +168,18 @@ struct State {
 }
 
 /// Sensor + actuator thread: read the DHT22 on GPIO26 every 2 s, drive the fan on
-/// GPIO25 from the humidity vs. the threshold with hysteresis, and publish the
+/// GPIO25 from the temperature vs. the threshold with hysteresis, and publish the
 /// reading + fan state into the shared `state` for the RPC handler to serve.
-fn run_sensor(pin: Gpio26, fan_pin: Gpio25, state: Arc<Mutex<State>>) {
+///
+/// `config_rx` lets a `SetThreshold` RPC wake this thread so the fan reacts to a new
+/// setpoint at once (re-applying against the last reading) instead of waiting for the
+/// next 2 s tick — without reading the DHT22 any more often.
+fn run_sensor(
+    pin: Gpio26,
+    fan_pin: Gpio25,
+    state: Arc<Mutex<State>>,
+    config_rx: mpsc::Receiver<()>,
+) {
     let mut sensor =
         PinDriver::input_output_od(pin).expect("Failed to configure GPIO26 (DHT22)");
     sensor.set_pull(Pull::Up).expect("pull-up");
@@ -180,14 +189,22 @@ fn run_sensor(pin: Gpio26, fan_pin: Gpio25, state: Arc<Mutex<State>>) {
     let mut fan = PinDriver::output(fan_pin).expect("Failed to configure GPIO25 (fan)");
     fan.set_low().expect("fan low");
     let mut fan_on = false;
+    let mut last: Option<Reading> = None;
 
     // DHT22 needs ≥1 s after power-on before the first read.
     std::thread::sleep(std::time::Duration::from_secs(2));
 
     loop {
+        // Fresh sample once per outer iteration (a config wake-up re-applies against
+        // `last` without a new read).
         match read_dht22_retry(&mut sensor) {
-            Ok(r) => {
-                // One lock: read the setpoint, decide the fan (hysteresis), publish.
+            Ok(r) => last = Some(r),
+            Err(e) => warn!("DHT22 read failed: {e}"),
+        }
+
+        loop {
+            // Apply the fan control from the latest reading + current threshold.
+            if let Some(r) = last {
                 let threshold = {
                     let mut s = state.lock().expect("poisoned");
                     // Hysteresis: once on, stay on until the temperature drops a band
@@ -211,13 +228,36 @@ fn run_sensor(pin: Gpio26, fan_pin: Gpio25, state: Arc<Mutex<State>>) {
                     threshold,
                 );
             }
-            Err(e) => warn!("DHT22 read failed: {e}"),
+
+            // Wait for the next tick, but wake immediately on a config change and
+            // re-apply against `last`. On timeout, break out to take a fresh reading.
+            match config_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(()) => {
+                    while config_rx.try_recv().is_ok() {} // coalesce a burst of changes
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Server gone (shouldn't happen) — fall back to a plain interval.
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    break;
+                }
+            }
         }
-        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 }
 
-fn connect_wifi(modem: Modem) -> (BlockingWifi<EspWifi<'static>>, std::net::Ipv4Addr) {
+/// Connect to WiFi and install an auto-reconnect handler. esp-idf does not re-associate
+/// on its own after the AP drops, so we subscribe to `WifiEvent` and call
+/// `esp_wifi_connect()` on every disconnect (a failed reconnect just fires another
+/// disconnect, so this retries until the AP is back). Returns the subscription, which
+/// must be kept alive for the handler to keep firing.
+fn connect_wifi(
+    modem: Modem,
+) -> (
+    BlockingWifi<EspWifi<'static>>,
+    EspSubscription<'static, System>,
+    std::net::Ipv4Addr,
+) {
     let (ssid, password) = WIFI_CONFIG
         .split_once(':')
         .expect("WIFI_CONFIG must be in the format SSID:PASSWORD");
@@ -230,7 +270,7 @@ fn connect_wifi(modem: Modem) -> (BlockingWifi<EspWifi<'static>>, std::net::Ipv4
     let mut wifi = BlockingWifi::wrap(
         EspWifi::new(modem, sys_loop.clone(), Some(nvs))
             .expect("Failed to create EspWifi"),
-        sys_loop,
+        sys_loop.clone(),
     )
     .expect("Failed to create BlockingWifi");
 
@@ -257,8 +297,23 @@ fn connect_wifi(modem: Modem) -> (BlockingWifi<EspWifi<'static>>, std::net::Ipv4
     info!("WiFi DHCP info: {ip_info:?}");
 
     let ip = ip_info.ip;
+
+    // Auto-reconnect: re-associate whenever the STA disconnects (e.g. AP beacon
+    // timeout). Keep the returned subscription alive or the handler stops firing.
+    let subscription = sys_loop
+        .subscribe::<WifiEvent, _>(|event| {
+            if matches!(event, WifiEvent::StaDisconnected(_)) {
+                warn!("WiFi disconnected — reconnecting");
+                unsafe {
+                    esp_idf_svc::sys::esp_wifi_connect();
+                }
+            }
+        })
+        .expect("Failed to subscribe to WiFi events");
+
     (
         wifi,
+        subscription,
         std::net::Ipv4Addr::new(
             ip.octets()[0],
             ip.octets()[1],
@@ -306,6 +361,8 @@ impl ProtocolHandler for Echo {
 #[derive(Debug, Clone)]
 struct SensorServer {
     state: Arc<Mutex<State>>,
+    /// Wakes the sensor thread to apply a new threshold immediately.
+    config_tx: mpsc::Sender<()>,
 }
 
 impl ProtocolHandler for SensorServer {
@@ -339,6 +396,9 @@ impl ProtocolHandler for SensorServer {
                         SetThresholdResponse::OutOfRange
                     } else {
                         self.state.lock().expect("poisoned").threshold = threshold;
+                        // Wake the sensor thread so the fan reacts to the new setpoint
+                        // right away instead of on the next read tick.
+                        let _ = self.config_tx.send(());
                         info!("threshold set to {threshold:.0}°C via API");
                         SetThresholdResponse::Ok
                     };
@@ -383,15 +443,19 @@ fn main() {
         threshold: DEFAULT_TEMP_THRESHOLD,
     }));
 
+    // Wake channel: a SetThreshold RPC signals the sensor thread to apply the new
+    // setpoint immediately instead of on the next read tick.
+    let (config_tx, config_rx) = mpsc::channel::<()>();
+
     // Read the DHT22 + drive the fan on their own thread.
     let sensor_state = state.clone();
     std::thread::Builder::new()
         .name("sensor".into())
         .stack_size(8192)
-        .spawn(move || run_sensor(sensor_pin, fan_pin, sensor_state))
+        .spawn(move || run_sensor(sensor_pin, fan_pin, sensor_state, config_rx))
         .expect("Failed to spawn sensor thread");
 
-    let (_wifi, wifi_ip) = connect_wifi(modem);
+    let (_wifi, _wifi_reconnect, wifi_ip) = connect_wifi(modem);
 
     // Sync system clock via SNTP — needed for TLS certificate validation
     // Keep _sntp alive so the periodic re-sync continues
@@ -455,7 +519,7 @@ fn main() {
 
         let _router = Router::builder(endpoint)
             .accept(ECHO_ALPN, Echo)
-            .accept(SENSOR_ALPN, SensorServer { state })
+            .accept(SENSOR_ALPN, SensorServer { state, config_tx })
             .spawn();
 
         info!("Iroh endpoint bound");
