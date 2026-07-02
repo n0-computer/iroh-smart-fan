@@ -70,12 +70,15 @@ impl Node {
 
     /// Set the fan temperature threshold on the device (protected by `secret`).
     /// Returns `"ok"`, `"unauthorized"`, or `"out-of-range"` so the caller can react
-    /// (e.g. snap a slider back on failure).
+    /// (e.g. snap a slider back on failure). On success, after a short delay it fetches
+    /// a fresh status on the same connection and pushes it through `on_reading`, so the
+    /// GUI reflects the new fan state without waiting for the next poll.
     pub async fn set_threshold(
         &self,
         ticket: String,
         secret: String,
         threshold: f64,
+        on_reading: js_sys::Function,
     ) -> Result<String, JsError> {
         let ticket: EndpointTicket = ticket.trim().parse().map_err(js_err)?;
         let addr: iroh::EndpointAddr = ticket.into();
@@ -88,6 +91,22 @@ impl Node {
             })
             .await
             .map_err(js_err)?;
+
+        if matches!(resp, SetThresholdResponse::Ok) {
+            // The device applies the new setpoint within milliseconds — well before
+            // this Ok round-tripped back — so fetch the fresh status right away (on the
+            // same connection) and update the display. No artificial delay needed.
+            if let Ok(Some(s)) = client.rpc(GetStatus).await {
+                let args = js_sys::Array::of4(
+                    &JsValue::from_f64(s.reading.temperature as f64),
+                    &JsValue::from_f64(s.reading.humidity as f64),
+                    &JsValue::from_bool(s.fan),
+                    &JsValue::from_f64(s.threshold as f64),
+                );
+                let _ = on_reading.apply(&JsValue::NULL, &args);
+            }
+        }
+
         Ok(match resp {
             SetThresholdResponse::Ok => "ok",
             SetThresholdResponse::Unauthorized => "unauthorized",

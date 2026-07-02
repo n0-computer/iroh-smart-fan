@@ -48,9 +48,11 @@ export class Node {
     /**
      * Set the fan temperature threshold on the device (protected by `secret`).
      * Returns `"ok"`, `"unauthorized"`, or `"out-of-range"` so the caller can react
-     * (e.g. snap a slider back on failure).
+     * (e.g. snap a slider back on failure). On success, after a short delay it fetches
+     * a fresh status on the same connection and pushes it through `on_reading`, so the
+     * GUI reflects the new fan state without waiting for the next poll.
      */
-    set_threshold(ticket: string, secret: string, threshold: number): Promise<string>;
+    set_threshold(ticket: string, secret: string, threshold: number, on_reading: Function): Promise<string>;
     /**
      * Spawn the endpoint. Pass a hex secret key to keep a stable id across reloads,
      * or `null`/empty to generate a fresh one.
@@ -86,7 +88,7 @@ export interface InitOutput {
     readonly __wbg_subscription_free: (a: number, b: number) => void;
     readonly node_endpoint_id: (a: number, b: number) => void;
     readonly node_secret_hex: (a: number, b: number) => void;
-    readonly node_set_threshold: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+    readonly node_set_threshold: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly node_spawn: (a: number, b: number) => number;
     readonly node_subscribe: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly start: () => void;
@@ -104,15 +106,15 @@ export interface InitOutput {
     readonly intounderlyingsource_cancel: (a: number) => void;
     readonly intounderlyingsource_pull: (a: number, b: number) => number;
     readonly ring_core_0_17_14__bn_mul_mont: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
-    readonly __wasm_bindgen_func_elem_14213: (a: number, b: number, c: number, d: number) => void;
-    readonly __wasm_bindgen_func_elem_14216: (a: number, b: number, c: number, d: number) => void;
-    readonly __wasm_bindgen_func_elem_5377: (a: number, b: number, c: number) => void;
-    readonly __wasm_bindgen_func_elem_2053: (a: number, b: number, c: number) => void;
-    readonly __wasm_bindgen_func_elem_7049: (a: number, b: number, c: number) => void;
-    readonly __wasm_bindgen_func_elem_5159: (a: number, b: number) => void;
-    readonly __wasm_bindgen_func_elem_6302: (a: number, b: number) => void;
-    readonly __wasm_bindgen_func_elem_6346: (a: number, b: number) => void;
-    readonly __wasm_bindgen_func_elem_8292: (a: number, b: number) => void;
+    readonly __wasm_bindgen_func_elem_14215: (a: number, b: number, c: number, d: number) => void;
+    readonly __wasm_bindgen_func_elem_14218: (a: number, b: number, c: number, d: number) => void;
+    readonly __wasm_bindgen_func_elem_5379: (a: number, b: number, c: number) => void;
+    readonly __wasm_bindgen_func_elem_2055: (a: number, b: number, c: number) => void;
+    readonly __wasm_bindgen_func_elem_7051: (a: number, b: number, c: number) => void;
+    readonly __wasm_bindgen_func_elem_5161: (a: number, b: number) => void;
+    readonly __wasm_bindgen_func_elem_6304: (a: number, b: number) => void;
+    readonly __wasm_bindgen_func_elem_6348: (a: number, b: number) => void;
+    readonly __wasm_bindgen_func_elem_8294: (a: number, b: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

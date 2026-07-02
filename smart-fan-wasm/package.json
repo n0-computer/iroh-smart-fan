@@ -8,7 +8,7 @@
     "build": "npm run build:wasm && node scripts/bundle.mjs",
     "build:debug": "cargo build --target wasm32-unknown-unknown && wasm-bindgen ./target/wasm32-unknown-unknown/debug/smart_fan_wasm.wasm --out-dir public/wasm --target web --debug",
     "bundle": "node scripts/bundle.mjs",
-    "serve": "python3 -m http.server 8080 --directory public"
+    "serve": "python3 -m http.server 8080 --directory dist"
   },
   "license": "MIT OR Apache-2.0"
 }
