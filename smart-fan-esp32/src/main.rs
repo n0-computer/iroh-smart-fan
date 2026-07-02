@@ -411,13 +411,26 @@ impl ProtocolHandler for SensorServer {
     }
 }
 
+/// Our own logger instance (rather than `EspLogger::initialize_default`) so we can
+/// set per-target log levels — see the note in `main`.
+static LOGGER: esp_idf_svc::log::EspLogger = esp_idf_svc::log::EspLogger::new();
+
 fn main() {
     // It is necessary to call this function once. Otherwise, some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
 
-    // Bind the log crate to the ESP Logging facilities
-    esp_idf_svc::log::EspLogger::initialize_default();
+    // Bind the log crate to ESP-IDF logging via our own logger instance so we can
+    // silence noisy targets. (esp_log_level_get caches per-tag levels by the CString
+    // *address*, so the level must be set through the same EspLogger that emits the
+    // records — not initialize_default's private global, nor a raw esp_log_level_set.)
+    log::set_logger(&LOGGER).expect("set logger");
+    LOGGER.initialize();
+    // iroh logs every datagram at INFO from this target (`poll_send; …`) — pure serial
+    // spam. Drop just this target to WARN; every other target keeps its level.
+    LOGGER
+        .set_target_level("iroh::socket::transports", log::LevelFilter::Warn)
+        .ok();
 
     // Register eventfd VFS — needed by mio's poll implementation which powers tokio I/O
     let eventfd_config = esp_idf_svc::sys::esp_vfs_eventfd_config_t {

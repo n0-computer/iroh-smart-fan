@@ -6,7 +6,10 @@ const $fan = document.querySelector("#fan-icon"); // absent in the thermometer v
 const $secret = document.querySelector("#secret"); // absent unless the fan is controllable
 const $slider = document.querySelector("#threshold"); // "
 const $thresholdLabel = document.querySelector("#threshold-label");
+const $tempMarker = document.querySelector("#temp-marker"); // subtle current-temp tick (control variant only)
 const $status = document.querySelector("#status");
+const $conn = document.querySelector("#conn"); // panel grouping ticket + secret
+const $connToggle = document.querySelector("#conn-toggle"); // gear that shows/hides it
 
 // Namespace persisted state by the page's path segment, so multiple GUI variants
 // embedded on one page (each in its own same-origin iframe) don't share an endpoint
@@ -22,6 +25,7 @@ const STALE = [138, 143, 152]; // #8a8f98
 const FADE_MS = 30_000;
 
 let node = null;
+let NodeClass = null; // the wasm `Node` class, captured at boot so we can re-spawn
 let current = null; // active Subscription handle
 let connectedTicket = null; // the ticket `current` is polling
 let lastReading = null;
@@ -52,15 +56,29 @@ if ($secret) {
 }
 refreshSlider();
 
-// The flourish: both numbers share one color driven off `lastReading` — mid-blue when
-// fresh, fading to gray over FADE_MS. Driving it from the shared timestamp keeps them
-// exactly in sync.
+// The connection group (ticket + secret) is just setup clutter once you have a ticket,
+// so it's hidden behind the gear. The gear lights up while the panel is open.
+function refreshConn() {
+  // Highlight the gear while the setup panel is open.
+  if ($connToggle && $conn) $connToggle.classList.toggle("active", !$conn.hidden);
+}
+// Start collapsed if a ticket is already prefilled; open otherwise so the first thing
+// you see is where to paste one. (Not tied to typing, so it never folds mid-edit.)
+// Hidden when a ticket is already set (URL fragment or stored); open when blank.
+if ($conn) $conn.hidden = $ticket.value.trim() !== "";
+refreshConn();
+
+// The flourish: the numbers and the fan share one color driven off `lastReading` —
+// mid-blue when fresh, fading to gray over FADE_MS. The fan is blue whether resting or
+// spinning; only staleness greys it out. Driving it all from the shared timestamp keeps
+// them exactly in sync.
 function paintFreshness() {
   const t = lastReading ? Math.min((Date.now() - lastReading) / FADE_MS, 1) : 1;
   const c = FRESH.map((f, i) => Math.round(f + (STALE[i] - f) * t));
   const color = `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
   $temp.style.color = color;
   $hum.style.color = color;
+  if ($fan) $fan.style.color = color;
   requestAnimationFrame(paintFreshness);
 }
 requestAnimationFrame(paintFreshness);
@@ -98,6 +116,14 @@ function onReading(temp, hum, fan, threshold) {
   if ($slider && document.activeElement !== $slider) {
     $slider.value = threshold;
     setThresholdLabel(threshold);
+  }
+  // Mark where the current temperature sits on the threshold track.
+  if ($tempMarker && $slider) {
+    const min = Number($slider.min);
+    const max = Number($slider.max);
+    const pct = Math.min(1, Math.max(0, (temp - min) / (max - min)));
+    $tempMarker.style.setProperty("--pct", pct);
+    $tempMarker.classList.add("visible");
   }
   lastReading = Date.now();
   $status.textContent = `last reading ${new Date(lastReading).toLocaleTimeString()}`;
@@ -140,12 +166,67 @@ function connect() {
   current = node.subscribe(ticket, onReading, onStatus);
   connectedTicket = ticket;
   refreshConnectButton();
+  // Fold the setup fields away now that we're connected.
+  if ($conn) $conn.hidden = true;
+  refreshConn();
 }
 
 $connect.addEventListener("click", connect);
 $ticket.addEventListener("input", refreshConnectButton);
 $ticket.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !$connect.disabled) connect();
+});
+
+// Gear toggles the connection setup panel (ticket + secret).
+if ($connToggle) {
+  $connToggle.addEventListener("click", () => {
+    if (!$conn) return;
+    $conn.hidden = !$conn.hidden;
+    refreshConn();
+  });
+}
+
+// Fast reconnect after the tab/phone was frozen. While suspended, the endpoint's relay
+// and device connections go stale, and iroh would otherwise wait out its reconnect
+// backoff — slow. A manual reload is instant because it starts from scratch, so on
+// return to the foreground we do the same thing in place: tear the node down and
+// re-spawn + resubscribe (keeping the page — chart, fade — intact, unlike a reload).
+let hiddenAt = null;
+async function reconnectFresh() {
+  const ticket = connectedTicket;
+  if (!ticket || !NodeClass) return;
+  onStatus("reconnecting…");
+  if (current) {
+    current.free();
+    current = null;
+  }
+  if (node) {
+    try {
+      node.free();
+    } catch (_) {}
+    node = null;
+  }
+  connectedTicket = null; // so connect() proceeds with the same (still-filled) ticket
+  try {
+    node = await NodeClass.spawn(localStorage.getItem(SECRET_KEY));
+    localStorage.setItem(SECRET_KEY, node.secret_hex());
+    connect();
+  } catch (err) {
+    $status.textContent = `reconnect failed: ${err}`;
+    console.error(err);
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    hiddenAt = Date.now();
+    return;
+  }
+  const staleFor = hiddenAt == null ? 0 : Date.now() - hiddenAt;
+  hiddenAt = null;
+  // Only rebuild if we were connected and away long enough to have gone stale — a quick
+  // tab flip doesn't need it (and would waste a history backfill).
+  if (connectedTicket && staleFor > 5000) reconnectFresh();
 });
 
 // Fan control wiring only exists when this variant has the secret + slider.
@@ -198,6 +279,7 @@ try {
   }
   const { default: init, Node } = await import(`${dir}wasm/smart_fan_wasm.js`);
   await init();
+  NodeClass = Node;
   node = await Node.spawn(localStorage.getItem(SECRET_KEY));
   localStorage.setItem(SECRET_KEY, node.secret_hex());
   $status.textContent = "ready — paste a ticket and connect";

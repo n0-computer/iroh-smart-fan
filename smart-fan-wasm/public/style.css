@@ -19,9 +19,56 @@ h1 {
   font-size: 1.3rem;
   font-weight: 600;
   letter-spacing: 0.02em;
-  margin: 0 0 1.25rem;
-  text-align: center;
+  margin: 0;
   opacity: 0.75;
+}
+/* Title row: headline centered, connection toggle at the right. The 1fr side columns
+   keep the headline truly centered regardless of the gear's width. */
+.head {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  margin: 0 0 1.25rem;
+}
+.head h1 {
+  grid-column: 2;
+  text-align: center;
+}
+/* Gear that shows/hides the ticket + secret setup panel below. */
+.conn-toggle {
+  grid-column: 3;
+  justify-self: end;
+  display: inline-flex;
+  padding: 0.3rem;
+  border: none;
+  background: none;
+  color: inherit;
+  opacity: 0.5;
+  cursor: pointer;
+  border-radius: 0.4rem;
+}
+.conn-toggle:hover,
+.conn-toggle.active {
+  opacity: 0.85;
+}
+.conn-toggle svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  display: block;
+}
+/* Panel grouping the ticket + secret setup fields; toggled by the gear, and hidden
+   once a ticket is set so the readings are the main view. */
+.conn {
+  border: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  border-radius: 0.5rem;
+  padding: 0.65rem;
+  margin: 0 0 0.5rem;
+}
+.conn[hidden] {
+  display: none;
+}
+.conn > #secret {
+  margin-top: 0.6rem;
 }
 .connect {
   display: flex;
@@ -85,11 +132,10 @@ button:disabled {
 .fan-icon {
   width: 3rem;
   height: 3rem;
-  color: #8a8f98; /* muted, static when off */
-  transition: color 0.3s;
+  color: #8a8f98; /* fallback until paintFreshness drives the color from freshness */
 }
+/* Resting vs. spinning is motion only — the blue/gray color is freshness-driven in JS. */
 .fan-icon.spinning {
-  color: #2b6cff;
   animation: spin 1.4s linear infinite;
 }
 @keyframes spin {
@@ -111,10 +157,45 @@ button:disabled {
   align-items: center;
   gap: 0.75rem;
 }
+/* Positioned box around the slider so the current-temp marker can overlay the track
+   and stay aligned on resize (it's positioned as a % of this box's width). */
+.slider-wrap {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+}
 .slider {
   flex: 1;
   min-width: 0;
   accent-color: #2b6cff;
+  /* The generic `input` rule adds padding + a border, which on a range input
+     offsets its native track from the thumb's travel — the blue accent-color fill
+     drifts to the right of the knob. Reset them so fill and thumb line up. */
+  padding: 0;
+  border: none;
+}
+/* Subtle vertical tick marking the current temperature on the threshold track.
+   `--pct` (0..1) is set from the reading in JS; the `--thumb` term reproduces the
+   thumb-width inset so the tick lines up with where the knob sits at that value. */
+.temp-marker {
+  --thumb: 16px;
+  position: absolute;
+  top: 50%;
+  left: calc(var(--thumb) / 2 + var(--pct, 0) * (100% - var(--thumb)));
+  width: 2px;
+  height: 14px;
+  transform: translate(-50%, -50%);
+  background: currentColor;
+  border-radius: 1px;
+  opacity: 0; /* fades in once the first reading arrives (.visible) */
+  pointer-events: none;
+  transition:
+    left 0.6s ease,
+    opacity 0.4s ease;
+}
+.temp-marker.visible {
+  opacity: 0.32;
 }
 .slider:disabled {
   opacity: 0.4;
