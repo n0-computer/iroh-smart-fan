@@ -25,20 +25,39 @@ cargo install wasm-bindgen-cli --version 0.2.126
 npm run build        # release wasm + self-contained bundle; or `npm run build:debug`
 ```
 
-`build` compiles to wasm, writes the JS bindings to `public/wasm/`, and then bundles
-a **self-contained `dist/`** — `index.html` with the CSS and JS inlined, plus the
-`wasm/` glue. That directory is a drop-in: copy it anywhere and serve it statically
-(e.g. `cp -R dist/ <site>/public/iroh-smart-fan/`). `npm run bundle` re-runs just the
-bundling step. The source under `public/` stays modular for development.
+`build` compiles the wasm once, writes the JS bindings to `public/wasm/`, then bundles
+one **self-contained directory per variant** into `dist/` (from `variants/*.html` +
+the shared `public/main.js`/`style.css`/`wasm/`): `remote-thermometer/` (readings
+only), `smart-fan-readonly/` (+ fan state), and `smart-fan/` (+ threshold control).
+Each is a drop-in `index.html` (CSS + JS inlined) plus its own `wasm/` copy. The
+source under `public/` stays modular for development, and `npm run bundle` re-runs
+just the bundling step.
+
+### Deploying to iroh.computer
+
+The blog embeds these via `<iframe>` on <https://iroh.computer>, which is a **separate
+repo** — there's no shared build. After `npm run build`, copy the bundles by hand into
+that repo, colocated with the post's other assets:
+
+```bash
+cp -R dist/* ../../iroh.computer/public/blog/an-iroh-powered-smart-fan/
+# served at /blog/an-iroh-powered-smart-fan/{remote-thermometer,smart-fan-readonly,smart-fan}/
+```
+
+(Adjust the path to wherever the `iroh.computer` checkout lives.) `main.js` namespaces
+`localStorage` by the last URL path segment, so the three can be embedded on one page
+without sharing an endpoint identity.
 
 ## Run
 
 ```bash
-npm run serve        # python3 -m http.server 8080 --directory public
+npm run serve        # python3 -m http.server 8080 --directory dist
 ```
 
-Open <http://localhost:8080>, paste the ticket from the firmware's serial output,
-and connect. The short id-only ticket is enough — pkarr discovery resolves the rest.
+`serve` serves the built `dist/`, so run `npm run build` first. Open a variant at
+<http://localhost:8080/smart-fan/> (or `/smart-fan-readonly/`, `/remote-thermometer/`),
+paste the ticket from the firmware's serial output, and connect. The short id-only
+ticket is enough — pkarr discovery resolves the rest.
 To control the fan, enter the device's `FAN_API_SECRET` (from its serial log) to
 unlock the threshold slider.
 
