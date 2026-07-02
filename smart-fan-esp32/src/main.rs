@@ -4,7 +4,7 @@ use esp_idf_svc::eventloop::{EspSubscription, EspSystemEventLoop, System};
 use esp_idf_svc::hal::gpio::*;
 use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi, WifiEvent};
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
@@ -27,28 +27,74 @@ mod insecure_verifier;
 /// The ALPN for the echo protocol.
 const ECHO_ALPN: &[u8] = b"echo/0";
 
-/// The node's secret key, always baked in at build time by `build.rs`: an explicit
-/// IROH_SECRET env var if you set one, otherwise a random key generated and cached.
-/// Either way it's embedded, so the endpoint ID is stable across reboots — set
-/// IROH_SECRET=<64 hex chars or base32> only to pin a *specific* identity.
+/// Optional build-time override for the node's secret key. Normally unset: the device
+/// generates a key on first boot and persists it in NVS (see [`resolve_iroh_secret`]),
+/// so the endpoint ID is stable across reboots *and* app reflashes, and unique per
+/// device. Set IROH_SECRET=<64 hex chars or base32> only to pin a *specific* identity.
 const IROH_SECRET: Option<&str> = option_env!("IROH_SECRET");
 
-/// Shared secret for authenticating fan-control API calls, baked in at build time by
-/// `build.rs` (same mechanism as [`IROH_SECRET`]): an explicit FAN_API_SECRET env var
-/// if set, otherwise a random one generated and cached. Always present, so `env!`.
-const FAN_API_SECRET: &str = env!("FAN_API_SECRET");
+/// Optional build-time override for the fan-control API secret. Normally unset: the
+/// device generates one on first boot and persists it in NVS (see [`resolve_fan_secret`]).
+const FAN_API_SECRET: Option<&str> = option_env!("FAN_API_SECRET");
+
+/// NVS namespace holding the device-generated secrets.
+const NVS_NAMESPACE: &str = "smartfan";
 
 const WIFI_CONFIG: &str = match option_env!("WIFI_CONFIG") {
     Some(value) => value,
     None => panic!("WIFI_CONFIG is not set. Build with WIFI_CONFIG='SSID:PASSWORD' cargo build"),
 };
 
-fn parse_secret_key() -> Option<SecretKey> {
-    let s = IROH_SECRET?;
-    Some(
-        s.parse()
-            .expect("IROH_SECRET must be valid hex (64 chars) or base32"),
-    )
+/// Fill `buf` with hardware random bytes. Call after WiFi/RF is up so the RNG has real
+/// entropy — before that, esp_fill_random is only pseudo-random.
+fn fill_random(buf: &mut [u8]) {
+    unsafe {
+        esp_idf_svc::sys::esp_fill_random(buf.as_mut_ptr() as *mut core::ffi::c_void, buf.len())
+    };
+}
+
+/// Resolve the node's iroh secret key. An explicit build-time IROH_SECRET wins;
+/// otherwise a device-local key is read from NVS, generating + persisting one on first
+/// boot. NVS survives app reflashes (only `espflash erase-flash` clears it), so the
+/// endpoint ID stays stable across firmware updates and is unique per device.
+fn resolve_iroh_secret(nvs: &mut EspNvs<NvsDefault>) -> SecretKey {
+    if let Some(hex) = IROH_SECRET {
+        return hex
+            .parse()
+            .expect("IROH_SECRET must be valid hex (64 chars) or base32");
+    }
+    let mut key = [0u8; 32];
+    if let Ok(Some(_)) = nvs.get_blob("iroh_secret", &mut key) {
+        return SecretKey::from_bytes(&key);
+    }
+    fill_random(&mut key);
+    nvs.set_blob("iroh_secret", &key)
+        .expect("persist iroh_secret to NVS");
+    info!("Generated a new node identity and stored it in NVS");
+    SecretKey::from_bytes(&key)
+}
+
+/// Resolve the fan-control API secret (16 hex chars). An explicit FAN_API_SECRET wins;
+/// otherwise it's device-generated + persisted in NVS on first boot.
+fn resolve_fan_secret(nvs: &mut EspNvs<NvsDefault>) -> Arc<str> {
+    if let Some(s) = FAN_API_SECRET {
+        return s.into();
+    }
+    // Stored as a 16-char hex string (8 random bytes → hex), and get_str fills the
+    // buffer with that string *plus a trailing NUL* — so it needs ≥17 bytes, not 8.
+    let mut buf = [0u8; 20];
+    if let Ok(Some(s)) = nvs.get_str("fan_api_secret", &mut buf) {
+        if !s.is_empty() {
+            return s.into();
+        }
+    }
+    let mut bytes = [0u8; 8];
+    fill_random(&mut bytes);
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    nvs.set_str("fan_api_secret", &hex)
+        .expect("persist fan_api_secret to NVS");
+    info!("Generated a new fan API secret and stored it in NVS");
+    hex.into()
 }
 
 // ESP-IDF doesn't provide gethostname, but resolv_conf (via hickory-resolver) references it.
@@ -253,6 +299,7 @@ fn run_sensor(
 /// must be kept alive for the handler to keep firing.
 fn connect_wifi(
     modem: Modem,
+    nvs: EspDefaultNvsPartition,
 ) -> (
     BlockingWifi<EspWifi<'static>>,
     EspSubscription<'static, System>,
@@ -265,7 +312,6 @@ fn connect_wifi(
     info!("Connecting to WiFi network: {ssid}");
 
     let sys_loop = EspSystemEventLoop::take().expect("Failed to take event loop");
-    let nvs = EspDefaultNvsPartition::take().expect("Failed to take NVS partition");
 
     let mut wifi = BlockingWifi::wrap(
         EspWifi::new(modem, sys_loop.clone(), Some(nvs))
@@ -363,6 +409,8 @@ struct SensorServer {
     state: Arc<Mutex<State>>,
     /// Wakes the sensor thread to apply a new threshold immediately.
     config_tx: mpsc::Sender<()>,
+    /// Shared secret required to authorize `SetThreshold` (device-generated, from NVS).
+    fan_secret: Arc<str>,
 }
 
 impl ProtocolHandler for SensorServer {
@@ -388,7 +436,7 @@ impl ProtocolHandler for SensorServer {
                 SensorMessage::SetThreshold(msg) => {
                     let WithChannels { inner, tx, .. } = msg;
                     let SetThreshold { secret, threshold } = inner;
-                    let response = if secret != FAN_API_SECRET {
+                    let response = if secret != *self.fan_secret {
                         warn!("rejected SetThreshold: bad API secret");
                         SetThresholdResponse::Unauthorized
                     } else if !(THRESHOLD_MIN..=THRESHOLD_MAX).contains(&threshold) {
@@ -473,11 +521,25 @@ fn main() {
         .spawn(move || run_sensor(sensor_pin, fan_pin, sensor_state, config_rx))
         .expect("Failed to spawn sensor thread");
 
-    let (_wifi, _wifi_reconnect, wifi_ip) = connect_wifi(modem);
+    // One NVS partition, shared: WiFi stores calibration in it, and we keep our own
+    // namespace for the device-generated secrets.
+    let nvs = EspDefaultNvsPartition::take().expect("Failed to take NVS partition");
+    let (_wifi, _wifi_reconnect, wifi_ip) = connect_wifi(modem, nvs.clone());
 
     // Sync system clock via SNTP — needed for TLS certificate validation
     // Keep _sntp alive so the periodic re-sync continues
     let _sntp = sync_time_sntp();
+
+    // IMPORTANT: keep this AFTER connect_wifi. First-boot secret generation draws on
+    // esp_fill_random, which is only cryptographically secure while an RF subsystem
+    // (WiFi/BT) is active — running it before WiFi is up would seed the device identity
+    // and API secret from weak pseudo-randomness. (Reads on subsequent boots don't
+    // care, but don't reorder this.) Each secret is generated + persisted in NVS on
+    // first boot, then stable across reboots and app reflashes.
+    let (iroh_secret, fan_secret) = {
+        let mut nvs = EspNvs::new(nvs, NVS_NAMESPACE, true).expect("open NVS namespace");
+        (resolve_iroh_secret(&mut nvs), resolve_fan_secret(&mut nvs))
+    };
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -509,9 +571,7 @@ fn main() {
                 c
             });
 
-        if let Some(key) = parse_secret_key() {
-            builder = builder.secret_key(key);
-        }
+        builder = builder.secret_key(iroh_secret);
 
         let endpoint = builder.bind().await.expect("unable to bind endpoint");
 
@@ -537,7 +597,14 @@ fn main() {
 
         let _router = Router::builder(endpoint)
             .accept(ECHO_ALPN, Echo)
-            .accept(SENSOR_ALPN, SensorServer { state, config_tx })
+            .accept(
+                SENSOR_ALPN,
+                SensorServer {
+                    state,
+                    config_tx,
+                    fan_secret: fan_secret.clone(),
+                },
+            )
             .spawn();
 
         info!("Iroh endpoint bound");
@@ -545,7 +612,7 @@ fn main() {
         info!("  Endpoint ID: {endpoint_id}");
         info!("  Short ticket: {short_ticket}");
         info!("  Long ticket:  {long_ticket}");
-        info!("  Fan API secret: {FAN_API_SECRET}");
+        info!("  Fan API secret: {fan_secret}");
         info!("  Sensor ALPN:  {}", String::from_utf8_lossy(SENSOR_ALPN));
 
         info!("Router started, accepting connections");
