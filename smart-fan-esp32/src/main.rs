@@ -80,21 +80,20 @@ fn resolve_fan_secret(nvs: &mut EspNvs<NvsDefault>) -> Arc<str> {
     if let Some(s) = FAN_API_SECRET {
         return s.into();
     }
-    // Stored as a 16-char hex string (8 random bytes → hex), and get_str fills the
-    // buffer with that string *plus a trailing NUL* — so it needs ≥17 bytes, not 8.
-    let mut buf = [0u8; 20];
-    if let Ok(Some(s)) = nvs.get_str("fan_api_secret", &mut buf) {
-        if !s.is_empty() {
-            return s.into();
-        }
-    }
+    // Stored as raw 8 bytes (like the iroh key); rendered to the 16-char hex string
+    // used on the wire / in the GUI only here at the point of use.
     let mut bytes = [0u8; 8];
-    fill_random(&mut bytes);
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    nvs.set_str("fan_api_secret", &hex)
-        .expect("persist fan_api_secret to NVS");
-    info!("Generated a new fan API secret and stored it in NVS");
-    hex.into()
+    if !matches!(nvs.get_blob("fan_api_secret", &mut bytes), Ok(Some(_))) {
+        fill_random(&mut bytes);
+        nvs.set_blob("fan_api_secret", &bytes)
+            .expect("persist fan_api_secret to NVS");
+        info!("Generated a new fan API secret and stored it in NVS");
+    }
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+        .into()
 }
 
 // ESP-IDF doesn't provide gethostname, but resolv_conf (via hickory-resolver) references it.
