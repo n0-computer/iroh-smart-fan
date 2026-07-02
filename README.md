@@ -1,24 +1,25 @@
 # iroh-smart-fan
 
 An [iroh](https://iroh.computer) endpoint running on a **PSRAM ESP32** that reads a
-DHT22 temperature/humidity sensor and serves the readings over standard QUIC. A
-desktop CLI dials it — over the internet (via an n0 relay) or locally, with nothing
-in between — and asks for the latest reading.
+DHT22 temperature/humidity sensor, drives a fan from a temperature threshold, and
+serves it all over standard QUIC. Dial it — over the internet (via an n0 relay) or
+locally, with nothing in between — from a desktop **CLI** or a **browser GUI** (Rust
+compiled to WebAssembly).
 
-Foundation for a smart-fan project. (It also still answers the `echo/0` protocol
-from the initial bring-up.)
+(It also still answers the `echo/0` protocol from the initial bring-up.)
 
-## Three crates (deliberately not a workspace)
+## Four crates (deliberately not a workspace)
 
 | crate | what |
 |-------|------|
-| [`smart-fan-proto/`](smart-fan-proto) | the shared irpc protocol: `Reading` + a `GetLatest` RPC |
-| [`smart-fan-esp32/`](smart-fan-esp32) | the ESP32 firmware — reads the DHT22 and serves the RPC |
-| [`smart-fan-cli/`](smart-fan-cli) | native CLI that dials the ticket and fetches the latest reading |
+| [`smart-fan-proto/`](smart-fan-proto) | shared irpc protocol: `Reading`/`Status` + `GetLatest`, `GetStatus`, `SetThreshold` |
+| [`smart-fan-esp32/`](smart-fan-esp32) | ESP32 firmware — reads the DHT22, drives the fan, serves the RPCs |
+| [`smart-fan-cli/`](smart-fan-cli) | native CLI: fetch readings/status, set the threshold, make a setup QR |
+| [`smart-fan-wasm/`](smart-fan-wasm) | browser GUI (Rust → WebAssembly): the CLI in a tab, relay-only |
 
-The firmware and CLI can't share a workspace: the firmware needs a different
-toolchain and a patched iroh, while the client uses released iroh. The proto crate
-is board-agnostic (no `[patch]`) and is a path dependency of both.
+The firmware can't share a workspace with the others: it needs a different toolchain
+and a patched iroh, while the CLI and GUI use released iroh. The proto crate is
+board-agnostic (no `[patch]`) and a path dependency of all three.
 
 ## Target boards
 
@@ -33,13 +34,23 @@ uses iroh's default buffers, no frugal tuning.
    cd smart-fan-esp32
    WIFI_CONFIG='SSID:PASSWORD' cargo run --release
    ```
-   It prints an **endpoint ticket** on the serial console (use the **long** ticket).
+   It prints an **endpoint ticket** on the serial console (the short ticket works
+   globally via discovery), plus a `FAN_API_SECRET` — the key needed to change the fan
+   threshold.
 
-2. **Run the client** with that ticket:
+2. **From the terminal** — fetch a reading / the full status, or set the threshold:
    ```bash
    cd smart-fan-cli
-   cargo run -- <endpoint-ticket>
+   cargo run -- status <endpoint-ticket>
+   # 27.6°C  49.8%  fan off  (threshold 25°C)
+   cargo run -- set-threshold <endpoint-ticket> 23 --secret <FAN_API_SECRET>
    ```
+
+3. **Or in the browser** — the same, as a WebAssembly GUI:
+   ```bash
+   cd smart-fan-wasm
+   npm run build && npm run serve
    ```
-   Latest reading: 27.6°C  49.8%
-   ```
+   Open <http://localhost:8080/smart-fan/>, paste the ticket, and — with the secret
+   entered — drag the threshold slider. Browsers are relay-only; the short ticket is
+   enough. See [`smart-fan-wasm/`](smart-fan-wasm) for the hosted-page and QR-code flow.
