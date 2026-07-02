@@ -431,6 +431,11 @@ fn main() {
     LOGGER
         .set_target_level("iroh::socket::transports", log::LevelFilter::Warn)
         .ok();
+    // tracing's `log` feature emits span lifecycle events (`tx`, `QADv4`, …) under this
+    // target, some at WARN — all noise on serial. Silence the target entirely.
+    LOGGER
+        .set_target_level("tracing::span", log::LevelFilter::Off)
+        .ok();
 
     // Register eventfd VFS — needed by mio's poll implementation which powers tokio I/O
     let eventfd_config = esp_idf_svc::sys::esp_vfs_eventfd_config_t {
